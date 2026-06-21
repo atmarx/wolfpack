@@ -131,23 +131,28 @@ after the radios prove out on a real ride.
 
 ## Key engineering notes (the stuff that bites)
 
-- **The arrow needs your heading — this is the real risk, not code volume.** Stock
-  derives heading from **GPS course-over-ground** (`estimatedHeading`): accurate while
-  you're rolling, but stock *blanks it at a standstill* — the exact Wolfpack moment
-  ("stopped at a junction, which way'd they go?"). The v1 fix is **firmware, not
-  hardware:** when you stop you're still facing the way you came, so we **hold the last
-  GPS course** (labeled "last heading") instead of blanking it. Covers the junction
-  case without adding a part.
-  - Label the arrow "direction of travel," NOT a compass with an N — stock draws it
-    like a magnetic compass, which misleads (Meshtastic issue #9928).
-  - **Magnetometer is deferred, not rejected.** A real compass only strictly wins if
-    you're stopped *and* rotating the bars to scan — and it brings headaches: it's a
-    separate sensor with no spot in the stock case, the cramped placement next to the
-    LoRa radio + battery wrecks its readings (hard-iron distortion → needs
-    calibration), and a bare mag wants tilt-compensation (an accelerometer) to read
-    right when the bars aren't level. Right move: add a **tilt-compensated 9-axis IMU**
-    (ICM20948-class) **when we 3D-print the bike case**, with its own isolated spot —
-    not crammed into the stock shell for v1.
+- **The arrow needs your heading — this is the real risk, not code volume.** The
+  radio always knows **distance + bearing to your leader** (pure math from both GPS
+  fixes — never stale). What it *can't* know without a compass is **which way you
+  face** — it infers that from motion (`estimatedHeading` = GPS course-over-ground), so
+  it's good while rolling and unknown at a standstill. Critically: stop and physically
+  turn the bike and a *held* arrow would be **confidently wrong** until you roll ~10m
+  and it re-syncs. So v1 handles the stop honestly, no magnetometer:
+  - **Flag it, don't fake it.** On stop, the arrow switches to a "heading lost — roll
+    to re-sync" state and falls back to honest numbers ("Leader 200m, bearing 040°,
+    North ↑"). A truthful compass-rose beats a lying arrow.
+  - **Warmer/colder junction mode.** At a fork you don't need your facing at all — pick
+    a branch, roll 20 ft, watch the distance to the leader. Shrinking = right way;
+    growing = back up. Pure distance gradient, zero heading, and it works exactly where
+    trails twist and cross. A Wolfpack original the asset-trackers never needed.
+  - Label any moving arrow "direction of travel," NOT a compass-N — stock draws it like
+    a magnetic compass, which misleads (Meshtastic issue #9928).
+  - **Magnetometer deferred, not rejected.** It's the clean fix for the
+    stopped-and-repositioned case — but the stock case has only a GNSS bay, and a mag
+    jammed next to the radio/battery distorts (needs calibration) and wants
+    tilt-compensation on non-level bars. So we add a tilt-compensated 9-axis IMU
+    (ICM20948-class) in the 3D-printed bike case, isolated from the radio — *if* field
+    testing shows warmer/colder + the honest stale-state aren't enough.
 - **Airtime is the scaling limit.** 12 nodes beaconing position on a shared channel
   plus multi-hop relay adds up fast. We tune three knobs on real hardware: position
   interval (smart-broadcast, faster while moving), hop limit (one trail system —
@@ -191,11 +196,11 @@ setup, sub-GHz enablement) and the protobufs. We don't start the watch layer col
 ## Open decisions for xram
 
 1. **Magnetometer — deferred to the custom-case phase** (was leaning yes; the stock
-   case flips it). v1 runs GPS-course heading + a firmware "hold last heading at
-   standstill" tweak — no extra parts, fits the stock case as-is. A real compass is
-   happiest as a tilt-compensated 9-axis IMU with its own isolated spot, which is a
-   3D-printed-case job. So **skip it for v1.** Still worth a ~$1 piezo buzzer per node
-   now (tail-lag alert) if the board has none.
+   case flips it). v1 runs GPS-course heading, an honest "heading lost — roll to
+   re-sync" state when stopped, and a warmer/colder distance-gradient mode for
+   junctions — no extra parts, fits the stock case as-is. A real compass (tilt-comp
+   9-axis IMU, isolated spot) is a 3D-printed-case job. **Skip it for v1.** Still worth
+   a ~$1 piezo buzzer per node now (tail-lag alert) if the board has none.
 2. **Confirm onboard GNSS** on the V4s *and* the $34 kit (Wireless Tracker-class:
    yes; bare LoRa: no). GPS is mandatory — it's what computes every arrow.
 3. **Start small or full 12?** Recommend flashing **3 nodes first** (one color:
