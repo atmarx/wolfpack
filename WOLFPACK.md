@@ -132,18 +132,22 @@ after the radios prove out on a real ride.
 ## Key engineering notes (the stuff that bites)
 
 - **The arrow needs your heading — this is the real risk, not code volume.** Stock
-  already derives heading from **GPS course-over-ground** (`estimatedHeading`):
-  accurate while you're rolling, but it goes *stale and meaningless at a standstill* —
-  which is exactly the Wolfpack moment ("I'm stopped at a confusing junction, which
-  way did the pack go?"). Two options:
-  - **COG-only:** free, zero hardware. Label the arrow "direction of travel," NOT a
-    compass with an N — stock draws it like a magnetic compass, which misleads
-    (Meshtastic issue #9928). Fine for glancing while moving.
-  - **Add a magnetometer (~$2 QMC5883L / LIS3MDL, I2C, 4 wires):** stock firmware's
-    `hasCompass` path *already supports it* — solder one per node and the arrow is
-    correct even stopped. You're hand-building 12 nodes anyway, so it's a small add
-    for a real win at the exact failure moment. **Recommend adding it** — decide now,
-    while you're still sourcing parts.
+  derives heading from **GPS course-over-ground** (`estimatedHeading`): accurate while
+  you're rolling, but stock *blanks it at a standstill* — the exact Wolfpack moment
+  ("stopped at a junction, which way'd they go?"). The v1 fix is **firmware, not
+  hardware:** when you stop you're still facing the way you came, so we **hold the last
+  GPS course** (labeled "last heading") instead of blanking it. Covers the junction
+  case without adding a part.
+  - Label the arrow "direction of travel," NOT a compass with an N — stock draws it
+    like a magnetic compass, which misleads (Meshtastic issue #9928).
+  - **Magnetometer is deferred, not rejected.** A real compass only strictly wins if
+    you're stopped *and* rotating the bars to scan — and it brings headaches: it's a
+    separate sensor with no spot in the stock case, the cramped placement next to the
+    LoRa radio + battery wrecks its readings (hard-iron distortion → needs
+    calibration), and a bare mag wants tilt-compensation (an accelerometer) to read
+    right when the bars aren't level. Right move: add a **tilt-compensated 9-axis IMU**
+    (ICM20948-class) **when we 3D-print the bike case**, with its own isolated spot —
+    not crammed into the stock shell for v1.
 - **Airtime is the scaling limit.** 12 nodes beaconing position on a shared channel
   plus multi-hop relay adds up fast. We tune three knobs on real hardware: position
   interval (smart-broadcast, faster while moving), hop limit (one trail system —
@@ -186,11 +190,12 @@ setup, sub-GHz enablement) and the protobufs. We don't start the watch layer col
 
 ## Open decisions for xram
 
-1. **Magnetometer — yes or no? (time-sensitive; you're sourcing parts now.)**
-   Without one the arrow is GPS-course-only and dies at a standstill — the exact
-   moment Wolfpack is for. A ~$2 QMC5883L (I2C, already supported by stock firmware)
-   fixes it. **Recommend one per node.** Same solder trip: a small piezo buzzer per
-   node for the tail-lag alert if the board has none.
+1. **Magnetometer — deferred to the custom-case phase** (was leaning yes; the stock
+   case flips it). v1 runs GPS-course heading + a firmware "hold last heading at
+   standstill" tweak — no extra parts, fits the stock case as-is. A real compass is
+   happiest as a tilt-compensated 9-axis IMU with its own isolated spot, which is a
+   3D-printed-case job. So **skip it for v1.** Still worth a ~$1 piezo buzzer per node
+   now (tail-lag alert) if the board has none.
 2. **Confirm onboard GNSS** on the V4s *and* the $34 kit (Wireless Tracker-class:
    yes; bare LoRa: no). GPS is mandatory — it's what computes every arrow.
 3. **Start small or full 12?** Recommend flashing **3 nodes first** (one color:
