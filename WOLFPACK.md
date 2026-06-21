@@ -174,15 +174,31 @@ trades away the range that's the whole point. For MVP the radio shows direction;
 voice stays on the walkie-talkies — and Wolfpack is the backup for exactly when
 those fail. Canned text/tone alerts are cheap and we can add those.
 
-## Node BOM (per radio)
+## Node hardware
 
-- Heltec LoRa V4 (SX1262, ESP32-S3) **with onboard GNSS** — or the $34 kit board
-  **if** it has GNSS; if not, add a GNSS module. GPS on every node is mandatory —
-  it's what computes distance + bearing.
-- 915 MHz antenna (US_915 — confirmed).
-- 18650 cell(s) from the salvaged 40V pack.
-- 3D-printed handlebar / backpack mount (xram designing).
-- Optional piezo buzzer for the tail alert if the board lacks one.
+**Bike-rider nodes (need a screen + continuous GNSS):**
+- **Recommended: Seeed Wio Tracker L1** (~$31 bare) — nRF52840 + SX1262 + **continuous
+  L76K GNSS built in**, 1.3" OLED, 2000 mAh, officially Meshtastic-supported. Built-in
+  GNSS removes the "confirm GNSS / add a module" problem entirely, and the 1.3" screen
+  beats the Heltec's 0.96" for a handlebar. Skip the L1 *Pro* (~$47) — it just adds a
+  case you'd replace with a printed mount. **No WiFi (BLE only)** — a non-issue here
+  (phone pairs over BLE; the homelab map is dog-side).
+- **Also fine: Heltec LoRa V4** (SX1262, ESP32-S3, 0.96" OLED) — already on the way.
+  Confirm onboard GNSS or add a module. Good bench/test units regardless.
+- ⚠️ **Do NOT buy the Wio Tracker *1110*** — it's the LR1110 *snapshot*-GPS board
+  (periodic asset pings, not live fixes); it won't drive a smooth arrow.
+
+**Dog-collar nodes (no screen; small, sealed, long battery):**
+- **Recommended: Seeed SenseCAP T1000-E** (~$40) — credit-card size, 32 g, IP65,
+  nRF52840, continuous GNSS, motion IMU, screenless. Purpose-built wearable tracker.
+  (This is the nRF52-class collar the project originally spec'd — same family as the
+  ThinkNode M3 / Houdini clips.)
+
+**Both:**
+- 915 MHz antenna (US_915).
+- Bike nodes: 18650(s) from the salvaged 40V pack (the L1 also has its own 2000 mAh).
+- 3D-printed handlebar / backpack mount (bike) — xram designing.
+- Optional ~$1 piezo buzzer per bike node for the tail-lag alert if the board lacks one.
 
 ## Found assets (mined from `~/Code-archives/meshTracker`)
 
@@ -201,8 +217,9 @@ setup, sub-GHz enablement) and the protobufs. We don't start the watch layer col
    junctions — no extra parts, fits the stock case as-is. A real compass (tilt-comp
    9-axis IMU, isolated spot) is a 3D-printed-case job. **Skip it for v1.** Still worth
    a ~$1 piezo buzzer per node now (tail-lag alert) if the board has none.
-2. **Confirm onboard GNSS** on the V4s *and* the $34 kit (Wireless Tracker-class:
-   yes; bare LoRa: no). GPS is mandatory — it's what computes every arrow.
+2. **Confirm onboard GNSS** on the V4s *and* the $34 kit — *moot if you standardize on
+   the Wio L1*, which has continuous GNSS built in. GPS is mandatory; it computes every
+   arrow. (Bare Heltec LoRa boards have none; the Wio L1 and SenseCAP T1000 both do.)
 3. **Start small or full 12?** Recommend flashing **3 nodes first** (one color:
    leader + middle + tail), prove it on a real ride, then scale.
 4. **Repo home?** Committed locally — point me at a Gitea remote (or say go and I'll
