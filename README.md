@@ -12,4 +12,5 @@ Common ground: US_915 region, 915 MHz antennas, GNSS on every node. The standalo
 (no-phone) HUD lives in a custom Meshtastic firmware module — that's the first code
 to write.
 
-Status: spec'd, hardware inbound.
+Status: spec'd; first hardware ordered — **3× Wio Tracker L1 inbound** for the first
+team. Day-one Phase 1 checklist in [BRINGUP.md](BRINGUP.md).

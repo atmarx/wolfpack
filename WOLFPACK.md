@@ -177,12 +177,12 @@ those fail. Canned text/tone alerts are cheap and we can add those.
 ## Node hardware
 
 **Bike-rider nodes (need a screen + continuous GNSS):**
-- **Recommended: Seeed Wio Tracker L1** (~$31 bare) — nRF52840 + SX1262 + **continuous
-  L76K GNSS built in**, 1.3" OLED, 2000 mAh, officially Meshtastic-supported. Built-in
-  GNSS removes the "confirm GNSS / add a module" problem entirely, and the 1.3" screen
-  beats the Heltec's 0.96" for a handlebar. Skip the L1 *Pro* (~$47) — it just adds a
-  case you'd replace with a printed mount. **No WiFi (BLE only)** — a non-issue here
-  (phone pairs over BLE; the homelab map is dog-side).
+- **CHOSEN: Seeed Wio Tracker L1** (~$31 bare) — nRF52840 + SX1262 + **continuous L76K
+  GNSS built in**, 1.3" OLED, 2000 mAh, official Meshtastic. **3 ordered** for the first
+  color team (leader/middle/tail). Built-in GNSS removes the "confirm GNSS" problem
+  entirely; the 1.3" screen beats the Heltec's 0.96" for a handlebar. Bare L1, not the
+  ~$47 Pro (its case gets replaced by a printed mount). No WiFi (BLE only) — non-issue:
+  phone pairs over BLE, homelab map is dog-side. **Bring-up: see [BRINGUP.md](BRINGUP.md).**
 - **Also fine: Heltec LoRa V4** (SX1262, ESP32-S3, 0.96" OLED) — already on the way.
   Confirm onboard GNSS or add a module. Good bench/test units regardless.
 - ⚠️ **Do NOT buy the Wio Tracker *1110*** — it's the LR1110 *snapshot*-GPS board
