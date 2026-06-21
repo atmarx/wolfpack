@@ -78,21 +78,34 @@ preset, not separate frequencies.)
 > a map — so you still show up holding radios that genuinely work. Safety net, not the
 > target. We're driving for the OLED.
 
-### The firmware decision (the big fork)
+### The firmware: a small module, not a from-scratch HUD
 
-Stock Meshtastic does position-sharing but **not** an on-device bearing HUD with no
-phone. To hit Tier 0 we **fork meshtastic/firmware and add a "Wolfpack" module**
-(C++ / PlatformIO). It:
+Big correction from the prior-art scan — **stock Meshtastic already draws distance +
+a bearing arrow to other nodes on the device OLED, no phone, using GPS
+course-over-ground as your heading.** It's real and shipping today:
+`src/graphics/draw/NodeListRenderer.cpp` (`drawNodeListWithCompasses`,
+`drawNodeDistance`, `drawCompassArrow`) plus `Screen.cpp` (`estimatedHeading` derives
+heading from GPS movement; a `hasCompass` path uses a real magnetometer when one's
+present). There's even a per-node "favorite" full-screen frame — basically "point me
+at THIS teammate." That's **~75% of Tier 0, free.**
 
-- reads the position packets every node already floods (native, free),
-- adds a tiny private packet carrying color + role,
-- builds a table of `nodeid → {color, role, distance, bearing, last_seen}`,
-- renders custom OLED frames, handles button input, and fires the tail-lag alert.
+So we don't build a HUD — we **fork meshtastic/firmware and add a small "Wolfpack"
+module** on top of what's there:
 
-**Rejected alternative:** keep stock firmware + a companion device doing the math.
-That re-introduces a phone/Pi/watch as a *dependency* — violates the core rule. So:
-firmware module it is. It's real C++ and a flash-test loop, but it's the only path
-to "radios alone run the show."
+- a `SinglePortModule` on a `PRIVATE_APP` port that broadcasts each node's
+  **color + role** and reads everyone else's — the one concept stock has no notion of,
+- one bespoke Screen frame: a big arrow to **your leader** + a compact roster of your
+  color, reusing the stock `drawCompassArrow` / `drawNodeDistance` calls,
+- the **tail-lag alert** (screen blink + buzz),
+- hazard marking via native Meshtastic **waypoints** (already in stock).
+
+Build skeleton is well-trodden: copy `ReplyModule`, register in
+`src/modules/Modules.cpp`, wire the frame into the `Screen` frame list the way the
+favorite-node frames do. The Module API is documented.
+
+**Rejected alternative:** stock firmware + a companion device doing the math
+re-introduces a phone/Pi/watch as a *dependency* — violates the core rule. The module
+is the only path to "radios alone run the show," and it's now a small one.
 
 ### Reuse from native Meshtastic (don't reinvent)
 
@@ -118,13 +131,19 @@ after the radios prove out on a real ride.
 
 ## Key engineering notes (the stuff that bites)
 
-- **The arrow needs your heading.** Bearing-to-target is easy from two GPS fixes.
-  But to draw an arrow that *points*, the radio must know which way YOU face. Stock
-  Heltec has no magnetometer — so we derive heading from **GPS course-over-ground**,
-  which is accurate *while moving* (perfect for biking) and unavailable when stopped
-  (we show numeric bearing + a "stopped" hint then). This is the one place the
-  Garmin watch is strictly better — it has a real compass — which is why Tier 1 is
-  attractive.
+- **The arrow needs your heading — this is the real risk, not code volume.** Stock
+  already derives heading from **GPS course-over-ground** (`estimatedHeading`):
+  accurate while you're rolling, but it goes *stale and meaningless at a standstill* —
+  which is exactly the Wolfpack moment ("I'm stopped at a confusing junction, which
+  way did the pack go?"). Two options:
+  - **COG-only:** free, zero hardware. Label the arrow "direction of travel," NOT a
+    compass with an N — stock draws it like a magnetic compass, which misleads
+    (Meshtastic issue #9928). Fine for glancing while moving.
+  - **Add a magnetometer (~$2 QMC5883L / LIS3MDL, I2C, 4 wires):** stock firmware's
+    `hasCompass` path *already supports it* — solder one per node and the arrow is
+    correct even stopped. You're hand-building 12 nodes anyway, so it's a small add
+    for a real win at the exact failure moment. **Recommend adding it** — decide now,
+    while you're still sourcing parts.
 - **Airtime is the scaling limit.** 12 nodes beaconing position on a shared channel
   plus multi-hop relay adds up fast. We tune three knobs on real hardware: position
   interval (smart-broadcast, faster while moving), hop limit (one trail system —
@@ -167,21 +186,28 @@ setup, sub-GHz enablement) and the protobufs. We don't start the watch layer col
 
 ## Open decisions for xram
 
-1. **Confirm the V4 board variant has onboard GNSS** (Wireless Tracker-class: yes;
-   bare LoRa V4: no). Same question for the $34 kit.
-2. **Start small or full 12?** Recommend flashing **3 nodes first** (one color:
-   leader + middle + tail), prove the HUD on a real ride, then scale. Lower risk,
-   faster "it works" moment to show the group.
-3. **Repo home?** Committed locally now — point me at the Gitea remote (or say the
-   word and I'll create one) so CI builds firmware on push.
-4. Buzzer on the V4, or do we add piezos?
+1. **Magnetometer — yes or no? (time-sensitive; you're sourcing parts now.)**
+   Without one the arrow is GPS-course-only and dies at a standstill — the exact
+   moment Wolfpack is for. A ~$2 QMC5883L (I2C, already supported by stock firmware)
+   fixes it. **Recommend one per node.** Same solder trip: a small piezo buzzer per
+   node for the tail-lag alert if the board has none.
+2. **Confirm onboard GNSS** on the V4s *and* the $34 kit (Wireless Tracker-class:
+   yes; bare LoRa: no). GPS is mandatory — it's what computes every arrow.
+3. **Start small or full 12?** Recommend flashing **3 nodes first** (one color:
+   leader + middle + tail), prove it on a real ride, then scale.
+4. **Repo home?** Committed locally — point me at a Gitea remote (or say go and I'll
+   create one) so CI builds firmware on push.
 
 ## Build phases
 
-- **Phase 0 (now):** spec + repo scaffold. ✅
-- **Phase 1:** fork meshtastic/firmware, Wolfpack module skeleton; position table +
-  static distance/bearing readout on the OLED for 2 bench nodes.
-- **Phase 2:** arrow + heading-from-course, button cycle, color/role config.
-- **Phase 3:** tail-lag alert + hazard waypoints.
-- **Phase 4:** real-ride field test with 3 nodes; tune airtime.
-- **Phase 5:** scale to 12; then Tier 1 watch / Tier 2 map as enhancements.
+- **Phase 0 (now):** spec + repo scaffold + prior-art scan. ✅
+- **Phase 1 — prove it on STOCK firmware:** flash 2–3 nodes with stock Meshtastic,
+  one private channel, GPS on. Confirm the stock node-list **Distance mode already
+  shows distance + bearing arrows** on the OLED. Validates ~75% of Tier 0 before we
+  write a line of code.
+- **Phase 2 — add the Wolfpack module:** `SinglePortModule` broadcasting color/role +
+  one custom Screen frame (big arrow to your leader + team roster). Magnetometer
+  decision lands here.
+- **Phase 3:** tail-lag alert + hazard waypoints + button cycling within your color.
+- **Phase 4:** real-ride field test with 3 nodes; tune airtime + heading UX.
+- **Phase 5:** scale to 12; then phone/map/watch enhancements as wanted.

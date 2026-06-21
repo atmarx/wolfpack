@@ -1,0 +1,38 @@
+# Woodpecker CI — Wolfpack
+#
+# This is a firmware project, so the pipeline shape is:
+#   CI  = "does it build, and do the host-native logic tests pass?"
+#   CD  = basically nothing — firmware gets flashed to radios, not deployed.
+#         The closest thing to a "deploy" is publishing a flashable .bin/.uf2
+#         artifact (wired in below once the Meshtastic fork + Wolfpack module land).
+#         The only piece that will ever deploy to a docker host is the future
+#         dog-tracking web map.
+
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: repo-sanity
+    image: alpine:3.20
+    commands:
+      - test -f WOLFPACK.md && echo "spec present"
+      - test -f README.md && echo "readme present"
+      - echo "Wolfpack repo OK — firmware build wires in here once the module lands."
+
+  # --- Firmware build (enable when the Meshtastic fork + Wolfpack module exist) ---
+  # - name: firmware-build
+  #   image: ghcr.io/platformio/platformio:latest
+  #   commands:
+  #     - pio run -e heltec-wireless-tracker   # or whichever V4 env we settle on
+  #
+  # --- Host-native logic tests (bearing / distance / team-filter math) ---
+  # - name: unit-tests
+  #   image: ghcr.io/platformio/platformio:latest
+  #   commands:
+  #     - pio test -e native
+  #
+  # --- Publish flashable artifact (the firmware equivalent of CD) ---
+  # - name: artifact
+  #   image: alpine:3.20
+  #   commands:
+  #     - echo "upload .pio/build/*/firmware.bin to releases"
