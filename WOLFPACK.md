@@ -35,14 +35,24 @@ dependency. This single rule is what forces a custom firmware module (below).
 
 ## Architecture
 
-### One mesh, color is app-layer
+### One mesh, one key, color is app-layer
 
-All 12 share one primary Meshtastic channel + PSK (private to us). That gives
-maximal rebroadcast/relay range across the whole pack. "Color" and "role" are
-**not** separate radio channels — they're attributes each node advertises, and the
-display filters by color. (This also settles the old airspace question: other LoRa
-meshes nearby share the airwaves but can't decrypt us, and we ignore them.
-Coexistence is via PSK + modem preset, not separate frequencies.)
+Every radio shares one primary Meshtastic channel + **one PSK** — all friendlies on
+the same mesh. "Color" and "role" are **not** separate channels or keys; they're
+attributes each node advertises, and the display filters by color.
+
+Why one shared key: it keeps every radio a full participant, so every node provably
+**relays for every other node** — the resilience that's the whole point. If a rider
+gets separated and can't reach their own teammates directly, any nearby node *of any
+color* hears them and pushes their position into the mesh until it lands with their
+group. Other teams' radios are your relays, even though you never see their dots.
+Per-color keys would only add complexity (and partial blindness) among people who all
+trust each other anyway. Multiple teams run follow-the-leader at once on the one mesh;
+the only per-color thing is what each screen chooses to show.
+
+(This also settles the old airspace question: other people's LoRa meshes nearby share
+the airwaves but can't decrypt us, and we ignore them. Coexistence is via PSK + modem
+preset, not separate frequencies.)
 
 ### Display tiers (ordered for the hardware we actually have)
 
@@ -60,13 +70,13 @@ Coexistence is via PSK + modem preset, not separate frequencies.)
   from the ESP32, no phone, no ANT+ — ANT+'s shared-source license is permissive but
   adds the adopter / network-key dance for zero benefit over BLE. Skip it.)*
 
-> **Day-one fallback — this cashes the check immediately.** The radios are useful
-> the moment they arrive, before any custom firmware exists: flash **stock
-> Meshtastic**, one private channel + PSK, position sharing on. Your phone on the
-> mount runs the Meshtastic app → the whole pack on a map, distance + bearing to
-> every node. That's a real, working Wolfpack at the next bike event. The custom
-> firmware below is the *upgrade* that removes the phone for coaches who'd rather
-> ride without a screen out. Two horizons; the first needs zero code.
+> **The goal is radios-alone — phone is just the safety net.** The real Wolfpack is
+> the standalone radio: follow-the-leader on the OLED, no phone, multiple teams at
+> once. That needs the custom firmware below, and that's the build. *If* the firmware
+> isn't ride-ready by the next event, there's a zero-code break-glass: flash stock
+> Meshtastic on one private channel and the official phone app shows the whole pack on
+> a map — so you still show up holding radios that genuinely work. Safety net, not the
+> target. We're driving for the OLED.
 
 ### The firmware decision (the big fork)
 
