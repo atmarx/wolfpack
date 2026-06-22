@@ -11,27 +11,30 @@
   html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
               font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
   #app { display:flex; flex-direction:column; height:100%; }
-  #map { flex:1; }
+  #map { flex:1; background:#0c0f14; }
   header { padding:8px 12px; background:var(--panel); display:flex; gap:14px;
            align-items:center; flex-wrap:wrap; border-bottom:1px solid #2a3140; }
   header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px; }
   .badge { font-size:11px; color:#0c0f14; background:#f5c451; padding:2px 7px;
            border-radius:99px; font-weight:700; }
   .legend { display:flex; gap:10px; margin-left:auto; flex-wrap:wrap; }
-  .legend span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); }
+  .legend span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; }
   .dot { width:11px; height:11px; border-radius:50%; display:inline-block; }
-  footer { padding:10px 12px; background:var(--panel); border-top:1px solid #2a3140;
-           display:flex; gap:12px; align-items:center; }
+  footer { padding:8px 12px; background:var(--panel); border-top:1px solid #2a3140;
+           display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
   footer button { background:#2b3340; color:var(--ink); border:1px solid #3a4350;
                   border-radius:7px; padding:6px 12px; cursor:pointer; font-weight:600; }
   footer button:hover { background:#36404f; }
-  #scrub { flex:1; }
-  .clock { font-variant-numeric:tabular-nums; color:var(--muted); min-width:120px; }
-  .readout { color:var(--muted); font-variant-numeric:tabular-nums; }
-  select { background:#2b3340; color:var(--ink); border:1px solid #3a4350;
-           border-radius:7px; padding:5px; }
+  #scrub { flex:1; min-width:160px; }
+  .clock { font-variant-numeric:tabular-nums; color:var(--muted); min-width:118px; }
+  #alerts { color:#ff8d8d; font-weight:600; min-width:120px; }
+  #spread { color:var(--muted); font-variant-numeric:tabular-nums; }
+  select { background:#2b3340; color:var(--ink); border:1px solid #3a4350; border-radius:7px; padding:5px; }
   .leaflet-tooltip.lbl { background:rgba(20,23,28,.85); border:none; color:#fff;
            font-weight:700; font-size:11px; box-shadow:none; }
+  .basepin { font-size:12px; font-weight:700; color:#fff; white-space:nowrap;
+             background:rgba(20,23,28,.8); padding:2px 7px; border-radius:6px;
+             border:1px solid #4a5568; }
 </style>
 </head>
 <body>
@@ -51,7 +54,8 @@
       <option value="2" selected>2×</option>
       <option value="4">4×</option>
     </select>
-    <span class="readout" id="readout"></span>
+    <span id="alerts"></span>
+    <span id="spread"></span>
   </footer>
 </div>
 
@@ -60,147 +64,196 @@
 "use strict";
 
 /* ------------------------------------------------------------------ *
- * Wolfpack phone map — Phase A (no hardware).
- * Renders team-colored follow-the-leader tracks with a timelapse scrub.
- * Today it runs on a MOCK ride. The only thing that changes for real
- * data is the DataSource: swap mock tracks for live positions coming off
- * a radio via @meshtastic/js (BLE/Serial) or a replay log. See connectLive().
- * Everything the map needs — id, name, lat, lon, time — is in the stable
- * Meshtastic Position/NodeInfo API; none of it depends on our firmware.
+ * Wolfpack phone map — Phase A (mock data, no hardware).
+ * Demos the real structure: 4 skill teams running follow-the-leader,
+ * a trailhead "base" anchor, last-known/greyed dots when a team branches
+ * out of range, and stop-status pills (injury / equipment).
+ * The only thing that changes for real data is the DataSource — swap the
+ * mock ride for live positions over @meshtastic/js (BLE, Android) or a
+ * replay log. Everything here is the stable Position API: id, name,
+ * lat/lon, time. None of it needs our firmware module.
  * ------------------------------------------------------------------ */
 
-// Team color comes from the short-name PREFIX (e.g. "R-Tail" -> Red). Short
-// names are in the stable API, so colored teams work before the firmware
-// module exists; later we read the module's real color/role field instead.
+// 4 teams = the 4 skill groups. Color is the handle; skill is the meaning.
 const TEAMS = {
-  R: { name: "Red",    color: "#e6394a" },
-  B: { name: "Blue",   color: "#3b82f6" },
-  G: { name: "Green",  color: "#22c55e" },
-  Y: { name: "Yellow", color: "#f5c451" },
+  R: { name: "Beginner",     color: "#e6394a" },
+  Y: { name: "Intermediate", color: "#f5c451" },
+  G: { name: "Proficient",   color: "#22c55e" },
+  B: { name: "Advanced",     color: "#3b82f6" },
 };
+const ROLES = ["Lead", "Mid", "Tail"];
 const ROLE_RADIUS = { Lead: 9, Mid: 7, Tail: 6 };
+const STALE = "#6b7280";
 
-const STEP_SECONDS = 10;            // each timeline step = 10s of ride
-const STEPS = 180;                  // -> a 30-min ride
+const STEP_SECONDS = 10, STEPS = 180;          // 30-min ride
+const BASE = [40.0520, -75.2110];              // trailhead / parking lot
 
-// --- geometry helpers ---------------------------------------------------
-function densify(waypoints, perSeg) {
+// per-skill profile: beginners ride small/slow, advanced big/fast & far out
+const PROFILE = {
+  R: { rLat: 0.0045, rLng: 0.0055, speed: 1.3, phase: 0.0 },
+  Y: { rLat: 0.0065, rLng: 0.0085, speed: 1.7, phase: 1.4 },
+  G: { rLat: 0.0095, rLng: 0.0120, speed: 2.0, phase: 2.6 },
+  B: { rLat: 0.0140, rLng: 0.0175, speed: 2.6, phase: 3.7 },   // advanced: farthest
+};
+const LAG = { Lead: 0, Mid: 9, Tail: 20 };
+
+// scripted events (step windows) to show off the states
+const ADV_OUT = [70, 130];                     // Advanced branches out of mesh range
+const INJURY  = ["R-Tail", 50, 100];           // Beginner tail hurt
+const EQUIP   = ["G-Mid", 90, 140];            // Proficient mid mechanical
+
+// --- helpers ---
+function ring(cLat, cLng, rLat, rLng, n, phase) {  // smooth elliptical loop
   const path = [];
-  for (let i = 0; i < waypoints.length; i++) {
-    const a = waypoints[i], b = waypoints[(i + 1) % waypoints.length];
-    for (let s = 0; s < perSeg; s++) {
-      const f = s / perSeg;
-      path.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
-    }
+  for (let k = 0; k < n; k++) {
+    const a = (2 * Math.PI * k) / n + phase;
+    path.push([cLat + rLat * Math.sin(a), cLng + rLng * Math.cos(a)]);
   }
-  return path;                      // closed loop
+  return path;
 }
-function posAtDist(path, d) {        // d in index units; wraps around the loop
-  const P = path.length;
-  const x = ((d % P) + P) % P;
-  const i = Math.floor(x), f = x - i;
+function posAtDist(path, d) {
+  const P = path.length, x = ((d % P) + P) % P, i = Math.floor(x), f = x - i;
   const a = path[i], b = path[(i + 1) % P];
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
 }
-function haversine(a, b) {           // meters
-  const R = 6371000, toRad = Math.PI / 180;
-  const dLat = (b[0] - a[0]) * toRad, dLng = (b[1] - a[1]) * toRad;
+function haversine(a, b) {
+  const R = 6371000, t = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * t, dLng = (b[1] - a[1]) * t;
   const s = Math.sin(dLat / 2) ** 2 +
-            Math.cos(a[0] * toRad) * Math.cos(b[0] * toRad) * Math.sin(dLng / 2) ** 2;
+            Math.cos(a[0] * t) * Math.cos(b[0] * t) * Math.sin(dLng / 2) ** 2;
   return Math.round(2 * R * Math.asin(Math.sqrt(s)));
 }
 function mmss(sec) {
-  const m = Math.floor(sec / 60), s = sec % 60;
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
   return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
 }
 
-// --- MOCK ride: two teams running follow-the-leader on Wissahickon loops -
+// --- build the mock ride ---
 function buildMockRide() {
-  const loopRed = densify([
-    [40.050,-75.215],[40.053,-75.212],[40.056,-75.213],[40.058,-75.210],
-    [40.056,-75.206],[40.052,-75.205],[40.049,-75.208],[40.048,-75.212],
-  ], 30);
-  const loopBlue = densify([
-    [40.045,-75.210],[40.047,-75.206],[40.050,-75.205],[40.051,-75.201],
-    [40.048,-75.199],[40.044,-75.200],[40.042,-75.204],[40.043,-75.208],
-  ], 30);
-  const LAG = { Lead: 0, Mid: 9, Tail: 20 };   // index units the pack strings out
-  const SPEED = 2.0;                            // index units advanced per step
-
-  function team(prefix, loop, phase) {
-    return ["Lead", "Mid", "Tail"].map(role => {
-      const track = [];
+  const nodes = [];
+  for (const k in TEAMS) {
+    const pr = PROFILE[k];
+    const loop = ring(BASE[0], BASE[1], pr.rLat, pr.rLng, 240, pr.phase);
+    for (const role of ROLES) {
+      const id = k + "-" + role;
+      // true position over time
+      const truePos = [];
+      for (let i = 0; i < STEPS; i++) truePos.push(posAtDist(loop, pr.phase * 10 + i * pr.speed - LAG[role]));
+      // heard[] — Advanced team drops off-mesh mid-ride
+      const heard = [];
+      for (let i = 0; i < STEPS; i++) heard.push(!(k === "B" && i >= ADV_OUT[0] && i < ADV_OUT[1]));
+      // status[]
+      const status = [];
       for (let i = 0; i < STEPS; i++) {
-        track.push(posAtDist(loop, phase + i * SPEED - LAG[role]));
+        if (id === INJURY[0] && i >= INJURY[1] && i < INJURY[2]) status.push("injury");
+        else if (id === EQUIP[0] && i >= EQUIP[1] && i < EQUIP[2]) status.push("equipment");
+        else status.push(null);
       }
-      return { id: prefix + "-" + role, short: prefix + "-" + role,
-               team: prefix, role, track };
-    });
+      // shown position + age from last-heard (the "last-known" behaviour)
+      const shown = [], age = [], lastHeard = [];
+      let li = 0;
+      for (let i = 0; i < STEPS; i++) {
+        if (heard[i]) li = i;
+        lastHeard.push(li);
+        shown.push(truePos[li]);
+        age.push((i - li) * STEP_SECONDS);
+      }
+      nodes.push({ id, short: k + "-" + role, team: k, role,
+                   skill: TEAMS[k].name, color: TEAMS[k].color,
+                   truePos, shown, age, status, lastHeard });
+    }
   }
-  return { nodes: [...team("R", loopRed, 0), ...team("B", loopBlue, 35)] };
+  return { nodes };
 }
 
-// --- map + render -------------------------------------------------------
+// --- map ---
 const map = L.map("map", { zoomControl: true });
 L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
-  maxZoom: 19, attribution: "© OpenStreetMap",
+  maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap © CARTO",
 }).addTo(map);
 
-let RIDE = null;            // { nodes:[{id,short,team,role,track:[[lat,lng]..]}] }
-const layers = {};         // id -> { marker, trail }
-
-function teamOf(node) { return TEAMS[node.team] || { name: node.team, color: "#aaa" }; }
+let RIDE = null;
+const layers = {};
 
 function buildLayers() {
   Object.values(layers).forEach(l => { l.marker.remove(); l.trail.remove(); });
   for (const k in layers) delete layers[k];
-  const bounds = [];
+  const bounds = [BASE];
+
+  // trailhead / base anchor
+  L.marker(BASE, { icon: L.divIcon({ className: "", html:
+      '<div class="basepin">🏁 Base</div>', iconSize: [54, 18], iconAnchor: [27, 9] }) })
+    .addTo(map);
+
   RIDE.nodes.forEach(node => {
-    const col = teamOf(node).color;
-    const trail = L.polyline([], { color: col, weight: 2.5, opacity: 0.55 }).addTo(map);
-    const marker = L.circleMarker(node.track[0], {
-      radius: ROLE_RADIUS[node.role] || 7, color: "#0c0f14", weight: 1.5,
-      fillColor: col, fillOpacity: node.role === "Tail" ? 0.55 : 0.95,
-    }).addTo(map).bindTooltip(node.short, { permanent: true, direction: "right",
-                                            className: "lbl", offset: [6, 0] });
+    const trail = L.polyline([], { color: node.color, weight: 2.5, opacity: 0.5 }).addTo(map);
+    const marker = L.circleMarker(node.shown[0], {
+      radius: ROLE_RADIUS[node.role], color: "#0c0f14", weight: 1.4,
+      fillColor: node.color, fillOpacity: 0.9,
+    }).addTo(map);
+    if (node.role === "Lead") {
+      marker.bindTooltip(node.skill, { permanent: true, direction: "right",
+                                       className: "lbl", offset: [7, 0] });
+    } else {
+      marker.bindTooltip(node.short, { direction: "top", className: "lbl" });
+    }
     layers[node.id] = { marker, trail };
-    node.track.forEach(p => bounds.push(p));
+    node.truePos.forEach(p => bounds.push(p));
   });
-  if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
+  map.fitBounds(bounds, { padding: [40, 40] });
 }
 
-function renderAt(step) {
+function renderAt(i) {
   if (!RIDE) return;
+  const alerts = [];
   RIDE.nodes.forEach(node => {
     const l = layers[node.id];
-    l.marker.setLatLng(node.track[step]);
-    l.trail.setLatLngs(node.track.slice(0, step + 1));   // full ride up to T = the "mapped ride"
+    const shown = node.shown[i], age = node.age[i], st = node.status[i], heard = age === 0;
+    l.marker.setLatLng(shown);
+    // styling: status ring > stale > normal
+    let stroke = "#0c0f14", weight = 1.4;
+    if (st === "injury") { stroke = "#ff3b3b"; weight = 3; }
+    else if (st === "equipment") { stroke = "#f5c451"; weight = 2.6; }
+    else if (!heard) { stroke = "#9aa4b2"; weight = 1; }
+    l.marker.setStyle({
+      fillColor: heard ? node.color : STALE, color: stroke, weight,
+      fillOpacity: heard ? (node.role === "Lead" ? 0.95 : node.role === "Mid" ? 0.8 : 0.6) : 0.35,
+    });
+    l.trail.setLatLngs(node.truePos.slice(0, node.lastHeard[i] + 1));
+    l.trail.setStyle({ opacity: heard ? 0.5 : 0.18 });
+    if (node.role !== "Lead") {
+      let tip = node.short + " · " + node.skill + " " + node.role;
+      if (st) tip += "  ⚠ " + st;
+      if (age > 0) tip += "  (" + age + "s ago)";
+      l.marker.setTooltipContent(tip);
+    }
+    if (st) alerts.push("⚠ " + node.skill + "-" + node.role + " " + st.toUpperCase());
   });
-  // clock + per-team lead→tail distance readout
-  document.getElementById("clock").textContent =
-    mmss(step * STEP_SECONDS) + " / " + mmss((STEPS - 1) * STEP_SECONDS);
-  const parts = [];
-  for (const prefix in TEAMS) {
-    const lead = RIDE.nodes.find(n => n.team === prefix && n.role === "Lead");
-    const tail = RIDE.nodes.find(n => n.team === prefix && n.role === "Tail");
-    if (lead && tail) parts.push(TEAMS[prefix].name + " spread " +
-      haversine(lead.track[step], tail.track[step]) + "m");
+
+  // footer: spread per in-range team, or out-of-range note
+  const spreads = [];
+  for (const k in TEAMS) {
+    const lead = RIDE.nodes.find(n => n.team === k && n.role === "Lead");
+    const tail = RIDE.nodes.find(n => n.team === k && n.role === "Tail");
+    if (!lead || !tail) continue;
+    const stale = RIDE.nodes.some(n => n.team === k && n.age[i] > 0);
+    spreads.push(TEAMS[k].name + " " + (stale ? "⚠out-of-range" : haversine(lead.shown[i], tail.shown[i]) + "m"));
   }
-  document.getElementById("readout").textContent = parts.join("  ·  ");
+  document.getElementById("clock").textContent =
+    mmss(i * STEP_SECONDS) + " / " + mmss((STEPS - 1) * STEP_SECONDS);
+  document.getElementById("alerts").textContent = alerts.join("   ");
+  document.getElementById("spread").textContent = spreads.join("  ·  ");
 }
 
 function buildLegend() {
-  const present = new Set(RIDE.nodes.map(n => n.team));
-  document.getElementById("legend").innerHTML = [...present].map(p =>
+  document.getElementById("legend").innerHTML = Object.keys(TEAMS).map(p =>
     `<span><i class="dot" style="background:${TEAMS[p].color}"></i>${TEAMS[p].name}</span>`
-  ).join("");
+  ).join("") + `<span><i class="dot" style="background:${STALE}"></i>out-of-range</span>`;
 }
 
-// --- timeline controls --------------------------------------------------
-const scrub = document.getElementById("scrub");
-const playBtn = document.getElementById("play");
+// --- timeline ---
+const scrub = document.getElementById("scrub"), playBtn = document.getElementById("play");
 let timer = null;
-
 scrub.addEventListener("input", () => renderAt(+scrub.value));
 playBtn.addEventListener("click", () => timer ? stop() : play());
 function play() {
@@ -208,41 +261,31 @@ function play() {
   const inc = +document.getElementById("speed").value;
   timer = setInterval(() => {
     let v = +scrub.value + inc;
-    if (v >= STEPS) { v = 0; }                 // loop the timelapse
+    if (v >= STEPS) v = 0;
     scrub.value = v; renderAt(v);
   }, 200);
 }
 function stop() { clearInterval(timer); timer = null; playBtn.textContent = "▶ Play"; }
 
-// --- DATA SOURCE: the one seam between mock and real --------------------
+// --- DATA SOURCE: the one seam between mock and real ---
 const DataSource = {
-  // Implemented: drive the map from a full ride (mock now; a replay log later).
   replay(ride) {
     RIDE = ride;
     scrub.max = STEPS - 1; scrub.value = 0;
     buildLayers(); buildLegend(); renderAt(0);
   },
-
   // TODO (Phase B, when hardware lands — Android / Web Bluetooth confirmed):
-  // Live positions off a radio. Nothing above changes — we just append fixes
-  // to each node's track as they arrive and re-render at "now".
-  //
   //   import { Client } from "https://cdn.jsdelivr.net/npm/@meshtastic/js/+esm";
-  //   const conn = await new Client().createBleConnection();   // Android/desktop Chrome
-  //   await conn.connect({ device: await navigator.bluetooth.requestDevice(...) });
-  //   conn.events.onPositionPacket.subscribe(p => {
-  //     // p.data: latitudeI/longitudeI (÷1e7), time;  p.from -> match to node by short name
-  //     // store.appendFix(nodeId, [lat, lng], p.data.time); renderLive();
-  //   });
-  // iOS Safari has no Web Bluetooth -> use the official Meshtastic app for live,
-  // and this SPA for replay/timelapse (which needs no live link).
-  async connectLive(/* transport */) {
+  //   const conn = await new Client().createBleConnection(); ...
+  //   conn.events.onPositionPacket.subscribe(p => store.appendFix(nodeId,[lat,lng],p.data.time));
+  // Match p.from to a node by short-name prefix; team color = prefix (R/Y/G/B);
+  // stale/last-known + status pills are already wired — live data just feeds them.
+  async connectLive() {
     document.getElementById("mode").textContent = "LIVE (not wired yet)";
     throw new Error("connectLive() is stubbed — wire @meshtastic/js when hardware lands.");
   },
 };
 
-// boot on the mock ride
 DataSource.replay(buildMockRide());
 </script>
 </body>
