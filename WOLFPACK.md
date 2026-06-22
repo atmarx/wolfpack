@@ -63,7 +63,8 @@ preset, not separate frequencies.)
   phone and the **official Meshtastic app already gives the full map, every node's
   distance + bearing, and the node list — today, on stock firmware, zero custom
   code.** This is what shows up working at the next event. A self-hosted single-page
-  app for the team-timelapse view comes later.
+  app for the team-timelapse view comes later — **design + a runnable mock are staged:
+  see [docs/PHONE-MAP.md](docs/PHONE-MAP.md) and [`web/`](web/).**
 - **Tier 2 — Garmin watch (future / if a coach has one):** glanceable wrist HUD over
   BLE — we have a working Connect IQ prototype in the archive (see Found Assets), but
   nobody on the crew owns a watch yet, so it's parked. *(For the record: BLE direct

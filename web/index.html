@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Wolfpack — team map &amp; timelapse</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root { --bg:#14171c; --panel:#1d222b; --ink:#e7ecf3; --muted:#8b94a3; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+              font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  #app { display:flex; flex-direction:column; height:100%; }
+  #map { flex:1; }
+  header { padding:8px 12px; background:var(--panel); display:flex; gap:14px;
+           align-items:center; flex-wrap:wrap; border-bottom:1px solid #2a3140; }
+  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px; }
+  .badge { font-size:11px; color:#0c0f14; background:#f5c451; padding:2px 7px;
+           border-radius:99px; font-weight:700; }
+  .legend { display:flex; gap:10px; margin-left:auto; flex-wrap:wrap; }
+  .legend span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); }
+  .dot { width:11px; height:11px; border-radius:50%; display:inline-block; }
+  footer { padding:10px 12px; background:var(--panel); border-top:1px solid #2a3140;
+           display:flex; gap:12px; align-items:center; }
+  footer button { background:#2b3340; color:var(--ink); border:1px solid #3a4350;
+                  border-radius:7px; padding:6px 12px; cursor:pointer; font-weight:600; }
+  footer button:hover { background:#36404f; }
+  #scrub { flex:1; }
+  .clock { font-variant-numeric:tabular-nums; color:var(--muted); min-width:120px; }
+  .readout { color:var(--muted); font-variant-numeric:tabular-nums; }
+  select { background:#2b3340; color:var(--ink); border:1px solid #3a4350;
+           border-radius:7px; padding:5px; }
+  .leaflet-tooltip.lbl { background:rgba(20,23,28,.85); border:none; color:#fff;
+           font-weight:700; font-size:11px; box-shadow:none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🐺 Wolfpack — team map &amp; timelapse</h1>
+    <span class="badge" id="mode">MOCK DATA</span>
+    <span class="legend" id="legend"></span>
+  </header>
+  <div id="map"></div>
+  <footer>
+    <button id="play">▶ Play</button>
+    <input id="scrub" type="range" min="0" max="0" value="0" />
+    <span class="clock" id="clock">00:00 / 00:00</span>
+    <select id="speed">
+      <option value="1">1×</option>
+      <option value="2" selected>2×</option>
+      <option value="4">4×</option>
+    </select>
+    <span class="readout" id="readout"></span>
+  </footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * Wolfpack phone map — Phase A (no hardware).
+ * Renders team-colored follow-the-leader tracks with a timelapse scrub.
+ * Today it runs on a MOCK ride. The only thing that changes for real
+ * data is the DataSource: swap mock tracks for live positions coming off
+ * a radio via @meshtastic/js (BLE/Serial) or a replay log. See connectLive().
+ * Everything the map needs — id, name, lat, lon, time — is in the stable
+ * Meshtastic Position/NodeInfo API; none of it depends on our firmware.
+ * ------------------------------------------------------------------ */
+
+// Team color comes from the short-name PREFIX (e.g. "R-Tail" -> Red). Short
+// names are in the stable API, so colored teams work before the firmware
+// module exists; later we read the module's real color/role field instead.
+const TEAMS = {
+  R: { name: "Red",    color: "#e6394a" },
+  B: { name: "Blue",   color: "#3b82f6" },
+  G: { name: "Green",  color: "#22c55e" },
+  Y: { name: "Yellow", color: "#f5c451" },
+};
+const ROLE_RADIUS = { Lead: 9, Mid: 7, Tail: 6 };
+
+const STEP_SECONDS = 10;            // each timeline step = 10s of ride
+const STEPS = 180;                  // -> a 30-min ride
+
+// --- geometry helpers ---------------------------------------------------
+function densify(waypoints, perSeg) {
+  const path = [];
+  for (let i = 0; i < waypoints.length; i++) {
+    const a = waypoints[i], b = waypoints[(i + 1) % waypoints.length];
+    for (let s = 0; s < perSeg; s++) {
+      const f = s / perSeg;
+      path.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+    }
+  }
+  return path;                      // closed loop
+}
+function posAtDist(path, d) {        // d in index units; wraps around the loop
+  const P = path.length;
+  const x = ((d % P) + P) % P;
+  const i = Math.floor(x), f = x - i;
+  const a = path[i], b = path[(i + 1) % P];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+}
+function haversine(a, b) {           // meters
+  const R = 6371000, toRad = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * toRad, dLng = (b[1] - a[1]) * toRad;
+  const s = Math.sin(dLat / 2) ** 2 +
+            Math.cos(a[0] * toRad) * Math.cos(b[0] * toRad) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(s)));
+}
+function mmss(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+}
+
+// --- MOCK ride: two teams running follow-the-leader on Wissahickon loops -
+function buildMockRide() {
+  const loopRed = densify([
+    [40.050,-75.215],[40.053,-75.212],[40.056,-75.213],[40.058,-75.210],
+    [40.056,-75.206],[40.052,-75.205],[40.049,-75.208],[40.048,-75.212],
+  ], 30);
+  const loopBlue = densify([
+    [40.045,-75.210],[40.047,-75.206],[40.050,-75.205],[40.051,-75.201],
+    [40.048,-75.199],[40.044,-75.200],[40.042,-75.204],[40.043,-75.208],
+  ], 30);
+  const LAG = { Lead: 0, Mid: 9, Tail: 20 };   // index units the pack strings out
+  const SPEED = 2.0;                            // index units advanced per step
+
+  function team(prefix, loop, phase) {
+    return ["Lead", "Mid", "Tail"].map(role => {
+      const track = [];
+      for (let i = 0; i < STEPS; i++) {
+        track.push(posAtDist(loop, phase + i * SPEED - LAG[role]));
+      }
+      return { id: prefix + "-" + role, short: prefix + "-" + role,
+               team: prefix, role, track };
+    });
+  }
+  return { nodes: [...team("R", loopRed, 0), ...team("B", loopBlue, 35)] };
+}
+
+// --- map + render -------------------------------------------------------
+const map = L.map("map", { zoomControl: true });
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: "© OpenStreetMap",
+}).addTo(map);
+
+let RIDE = null;            // { nodes:[{id,short,team,role,track:[[lat,lng]..]}] }
+const layers = {};         // id -> { marker, trail }
+
+function teamOf(node) { return TEAMS[node.team] || { name: node.team, color: "#aaa" }; }
+
+function buildLayers() {
+  Object.values(layers).forEach(l => { l.marker.remove(); l.trail.remove(); });
+  for (const k in layers) delete layers[k];
+  const bounds = [];
+  RIDE.nodes.forEach(node => {
+    const col = teamOf(node).color;
+    const trail = L.polyline([], { color: col, weight: 2.5, opacity: 0.55 }).addTo(map);
+    const marker = L.circleMarker(node.track[0], {
+      radius: ROLE_RADIUS[node.role] || 7, color: "#0c0f14", weight: 1.5,
+      fillColor: col, fillOpacity: node.role === "Tail" ? 0.55 : 0.95,
+    }).addTo(map).bindTooltip(node.short, { permanent: true, direction: "right",
+                                            className: "lbl", offset: [6, 0] });
+    layers[node.id] = { marker, trail };
+    node.track.forEach(p => bounds.push(p));
+  });
+  if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
+}
+
+function renderAt(step) {
+  if (!RIDE) return;
+  RIDE.nodes.forEach(node => {
+    const l = layers[node.id];
+    l.marker.setLatLng(node.track[step]);
+    l.trail.setLatLngs(node.track.slice(0, step + 1));   // full ride up to T = the "mapped ride"
+  });
+  // clock + per-team lead→tail distance readout
+  document.getElementById("clock").textContent =
+    mmss(step * STEP_SECONDS) + " / " + mmss((STEPS - 1) * STEP_SECONDS);
+  const parts = [];
+  for (const prefix in TEAMS) {
+    const lead = RIDE.nodes.find(n => n.team === prefix && n.role === "Lead");
+    const tail = RIDE.nodes.find(n => n.team === prefix && n.role === "Tail");
+    if (lead && tail) parts.push(TEAMS[prefix].name + " spread " +
+      haversine(lead.track[step], tail.track[step]) + "m");
+  }
+  document.getElementById("readout").textContent = parts.join("  ·  ");
+}
+
+function buildLegend() {
+  const present = new Set(RIDE.nodes.map(n => n.team));
+  document.getElementById("legend").innerHTML = [...present].map(p =>
+    `<span><i class="dot" style="background:${TEAMS[p].color}"></i>${TEAMS[p].name}</span>`
+  ).join("");
+}
+
+// --- timeline controls --------------------------------------------------
+const scrub = document.getElementById("scrub");
+const playBtn = document.getElementById("play");
+let timer = null;
+
+scrub.addEventListener("input", () => renderAt(+scrub.value));
+playBtn.addEventListener("click", () => timer ? stop() : play());
+function play() {
+  playBtn.textContent = "⏸ Pause";
+  const inc = +document.getElementById("speed").value;
+  timer = setInterval(() => {
+    let v = +scrub.value + inc;
+    if (v >= STEPS) { v = 0; }                 // loop the timelapse
+    scrub.value = v; renderAt(v);
+  }, 200);
+}
+function stop() { clearInterval(timer); timer = null; playBtn.textContent = "▶ Play"; }
+
+// --- DATA SOURCE: the one seam between mock and real --------------------
+const DataSource = {
+  // Implemented: drive the map from a full ride (mock now; a replay log later).
+  replay(ride) {
+    RIDE = ride;
+    scrub.max = STEPS - 1; scrub.value = 0;
+    buildLayers(); buildLegend(); renderAt(0);
+  },
+
+  // TODO (Phase B, when hardware lands + we know the phone OS):
+  // Live positions off a radio. Nothing above changes — we just append fixes
+  // to each node's track as they arrive and re-render at "now".
+  //
+  //   import { Client } from "https://cdn.jsdelivr.net/npm/@meshtastic/js/+esm";
+  //   const conn = await new Client().createBleConnection();   // Android/desktop Chrome
+  //   await conn.connect({ device: await navigator.bluetooth.requestDevice(...) });
+  //   conn.events.onPositionPacket.subscribe(p => {
+  //     // p.data: latitudeI/longitudeI (÷1e7), time;  p.from -> match to node by short name
+  //     // store.appendFix(nodeId, [lat, lng], p.data.time); renderLive();
+  //   });
+  // iOS Safari has no Web Bluetooth -> use the official Meshtastic app for live,
+  // and this SPA for replay/timelapse (which needs no live link).
+  async connectLive(/* transport */) {
+    document.getElementById("mode").textContent = "LIVE (not wired yet)";
+    throw new Error("connectLive() is stubbed — wire @meshtastic/js when hardware lands.");
+  },
+};
+
+// boot on the mock ride
+DataSource.replay(buildMockRide());
+</script>
+</body>
+</html>
