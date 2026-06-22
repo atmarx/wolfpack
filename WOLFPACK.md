@@ -115,20 +115,30 @@ is the only path to "radios alone run the show," and it's now a small one.
 - **Hazard marking = Waypoints** — Meshtastic already has a waypoint primitive.
   Button-hold drops a "hazard here" waypoint (downed tree, etc.) that propagates to
   the whole mesh and flashes on every screen. Free win.
+- **Stop-status = text messages / Canned Messages** — the reasons are just preset text
+  messages; the Canned Message Module already sends presets from the device, and
+  incoming text already shows on every OLED + the phone. So the *transport + display are
+  free*; our module only owns the tap→menu→confirm UX and the color/role-tagged,
+  severity-ranked rendering. Testable on the Phase-1 stock radios today.
 
 ## MVP scope (what ships first)
 
 The thing that makes the embellishment true:
 
-1. Flash V4 nodes with Wolfpack firmware (start with 3–4, scale to 12).
+1. Flash the Wio L1 nodes with Wolfpack firmware (start with the 3 on the way, scale up).
 2. One private mesh, position sharing on.
 3. OLED shows a target's **distance + direction arrow**; button cycles target.
 4. Per-node color/role config.
 5. Tail-lag alert: screen blink + buzz when the tail drifts past a set distance.
-6. Hazard waypoint on button-hold.
+6. Hazard waypoint on button-hold (downed tree, etc.).
+7. **Stop-status broadcast** — tap → pick a reason (**equipment / biker / injury**, plus
+   **rolling** to clear) → confirm → send. Pops on every coach's screen + the phone,
+   color/role tagged. Injury rates an urgent alert (louder buzz); equipment is a quiet
+   ping. The *manual* partner to the automatic tail-lag alert (#5), and a sibling to
+   hazard waypoints (#6 marks a *place*; this marks your *status*).
 
-**Explicitly NOT in MVP:** phone app, audio, geofencing, timelapse map. Those come
-after the radios prove out on a real ride.
+**Explicitly NOT in MVP:** audio, geofencing, the custom phone app/timelapse (the
+official app covers live viewing day one). Those come after the radios prove out.
 
 ## Key engineering notes (the stuff that bites)
 
