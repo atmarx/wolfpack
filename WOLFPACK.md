@@ -54,6 +54,27 @@ the only per-color thing is what each screen chooses to show.
 the airwaves but can't decrypt us, and we ignore them. Coexistence is via PSK + modem
 preset, not separate frequencies.)
 
+### Field pattern: common start → branch → rendezvous
+
+Rides start with everyone bunched at a trailhead/parking lot, then color teams branch
+off in different directions and meet back up later. The nav value is all in the branch
+and the regroup — and four things follow:
+
+- **Base anchor.** Mark the trailhead as a fixed "base" waypoint (auto-drop it where the
+  nodes first power on / cluster). "Distance + bearing to base" is a universal
+  get-me-home readout and the natural rendezvous — a lost tail's safe fallback.
+- **The mesh partitions along team lines — expected, not a bug.** When teams branch
+  beyond LoRa range with nobody between, the mesh splits into per-team islands. Your own
+  group stays together, so intra-team nav (the core job) stays solid; cross-team
+  awareness just goes stale until you converge, then self-heals.
+- **Show last-known, never blank.** When a team branches out of range, render their dots
+  greyed with an age ("Blue — last seen 4 min ago") instead of dropping them.
+  Meshtastic's NodeDB already retains last positions, so it's nearly free — and it's
+  exactly what branch-and-regroup needs. (Applies to both the OLED roster and the phone map.)
+- **Optional base-relay node.** Leave one radio at the trailhead — elevated or on a car
+  roof. It relays between branched groups (extends cross-team range) and serves as the
+  base anchor. Same node doubles as the dog-tracker base station.
+
 ### Display tiers (ordered for the hardware we actually have)
 
 - **Tier 0 — Radio OLED (the goal, standalone):** the 128×64 screen on the Heltec
