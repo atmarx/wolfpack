@@ -203,6 +203,15 @@ official app covers live viewing day one). Those come after the radios prove out
   interval (smart-broadcast, faster while moving), hop limit (one trail system —
   keep hops low), and modem preset (LongFast for range vs MediumFast for less
   airtime). This is measured, not guessed.
+- **Range is terrain-dominated, not foliage.** These trails are moderate cover with lots
+  of vertical, so 900 MHz is blocked by hills, not leaves — a ridge between two nodes
+  kills the link even at ~200 m, while a clear sightline runs a km+. Feast-or-famine.
+  Levers, in order: **height** (a node on a high point with sightlines covers multiple
+  valleys; one in a low parking lot covers little — put the "center" node UP, not
+  necessarily at the cars), a **longer modem preset** (tiny packets afford it), and the
+  **mesh** (the strung-out pack is its own relay chain; a ridge relay fills shadows).
+  Nooks are the nasty case — a tail in a gully loses group + signal at once, exactly
+  where last-known position and warmer/colder cover. Measure on the real trails (Phase 1).
 - **Tail-lag rule (simple v1):** if the max distance between same-color nodes
   exceeds a threshold, the whole color team's screens blink + buzz. Tune on trail.
 - **Power:** salvaged 18650s; GPS is the big draw. Smart-broadcast + screen sleep

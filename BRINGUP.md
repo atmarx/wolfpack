@@ -40,6 +40,16 @@ validated and we start the module.
   course). Standing still it can't know your facing — that's exactly what the module's
   honest "heading lost" state + warmer/colder mode fix later.
 
+## 6. Measure your range (terrain test)
+Range here is set by hills, not leaves — so test the shadows, not just the flat:
+- Two nodes, walk apart on open trail until the link drops — note the distance (best-case
+  per-hop).
+- Now put a **ridge or hill between you** and watch it die far sooner — that's the real
+  limiter. Note where.
+- Drop one in a **nook/gully** and see how close the other has to be to hold the link.
+- Try the base **high vs. low** — hold one up on a high point vs. down in the lot and
+  compare how much trail it reaches. That's how you decide where the center node lives.
+
 ## Done looks like
 Three radios, no phone, each showing how far and which way to the others as you move
 them around the yard or trail. That's Tier 0's core on stock firmware. **Next:** the
