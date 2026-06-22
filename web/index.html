@@ -65,9 +65,10 @@
 
 /* ------------------------------------------------------------------ *
  * Wolfpack phone map — Phase A (mock data, no hardware).
- * Demos the real structure: 4 skill teams running follow-the-leader,
- * a trailhead "base" anchor, last-known/greyed dots when a team branches
- * out of range, and stop-status pills (injury / equipment).
+ * Demos the real ride shape: all 4 skill teams start at the one parking-lot
+ * "base", fan out on different bearings (follow-the-leader, lead→tail strung
+ * out), loop their own terrain, and converge back to base. Plus last-known/
+ * greyed dots when a team branches out of range, and stop-status pills.
  * The only thing that changes for real data is the DataSource — swap the
  * mock ride for live positions over @meshtastic/js (BLE, Android) or a
  * replay log. Everything here is the stable Position API: id, name,
@@ -88,33 +89,33 @@ const STALE = "#6b7280";
 const STEP_SECONDS = 10, STEPS = 180;          // 30-min ride
 const BASE = [40.0520, -75.2110];              // trailhead / parking lot
 
-// per-skill profile: beginners ride small/slow, advanced big/fast & far out
+// per-skill petal: a loop that LEAVES the base, bulges out on its own
+// bearing, and returns — so all 4 teams fan out from the one parking lot
+// in different directions and converge back. Beginners stay close;
+// advanced range farthest (and is the team that branches off-mesh).
 const PROFILE = {
-  R: { rLat: 0.0045, rLng: 0.0055, speed: 1.3, phase: 0.0 },
-  Y: { rLat: 0.0065, rLng: 0.0085, speed: 1.7, phase: 1.4 },
-  G: { rLat: 0.0095, rLng: 0.0120, speed: 2.0, phase: 2.6 },
-  B: { rLat: 0.0140, rLng: 0.0175, speed: 2.6, phase: 3.7 },   // advanced: farthest
+  R: { dir:  15, Ra: 0.0050, Rb: 0.0040 },   // Beginner — N-ish, closest
+  Y: { dir: 105, Ra: 0.0080, Rb: 0.0065 },   // Intermediate — E-ish
+  G: { dir: 200, Ra: 0.0110, Rb: 0.0090 },   // Proficient — SSW
+  B: { dir: 300, Ra: 0.0140, Rb: 0.0115 },   // Advanced — WNW, farthest out
 };
-const LAG = { Lead: 0, Mid: 9, Tail: 20 };
+const LAG = { Lead: 0, Mid: 7, Tail: 16 };   // tail trails lead along the petal
 
 // scripted events (step windows) to show off the states
-const ADV_OUT = [70, 130];                     // Advanced branches out of mesh range
+const ADV_OUT = [60, 120];                     // Advanced branches out of mesh range (far portion of its petal)
 const INJURY  = ["R-Tail", 50, 100];           // Beginner tail hurt
 const EQUIP   = ["G-Mid", 90, 140];            // Proficient mid mechanical
 
 // --- helpers ---
-function ring(cLat, cLng, rLat, rLng, n, phase) {  // smooth elliptical loop
-  const path = [];
-  for (let k = 0; k < n; k++) {
-    const a = (2 * Math.PI * k) / n + phase;
-    path.push([cLat + rLat * Math.sin(a), cLng + rLng * Math.cos(a)]);
-  }
-  return path;
-}
-function posAtDist(path, d) {
-  const P = path.length, x = ((d % P) + P) % P, i = Math.floor(x), f = x - i;
-  const a = path[i], b = path[(i + 1) % P];
-  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+const LNGS = 1.305;  // ~1/cos(40°): keep petals round-ish on the map at this lat
+function petal(base, thetaDeg, Ra, Rb, a) {
+  // closed loop that starts AND ends at `base`, bulging out along bearing theta.
+  // a∈[0,2π]:  a=0 → base,  a=π → far point (~2·Ra out),  a=2π → base again.
+  const th = thetaDeg * Math.PI / 180, ct = Math.cos(th), st = Math.sin(th);
+  const out = -Math.cos(a) * Ra, side = Math.sin(a) * Rb;   // along / across bearing
+  const lat = base[0] + Ra * ct + out * ct - side * st;
+  const lng = base[1] + LNGS * (Ra * st + out * st + side * ct);
+  return [lat, lng];
 }
 function haversine(a, b) {
   const R = 6371000, t = Math.PI / 180;
@@ -131,14 +132,22 @@ function mmss(sec) {
 // --- build the mock ride ---
 function buildMockRide() {
   const nodes = [];
+  const TWO_PI = 2 * Math.PI;
   for (const k in TEAMS) {
     const pr = PROFILE[k];
-    const loop = ring(BASE[0], BASE[1], pr.rLat, pr.rLng, 240, pr.phase);
     for (const role of ROLES) {
       const id = k + "-" + role;
-      // true position over time
+      // true position over time: one petal out from base and back, tail
+      // trailing the lead. Clamped to [0,1] so the team gathers AT base at the
+      // start and end — everyone leaves the lot and everyone returns to it.
       const truePos = [];
-      for (let i = 0; i < STEPS; i++) truePos.push(posAtDist(loop, pr.phase * 10 + i * pr.speed - LAG[role]));
+      for (let i = 0; i < STEPS; i++) {
+        // normalize so even the tail completes its petal by the end — the lead
+        // finishes early and waits at the lot while the tail rolls in.
+        let f = (i - LAG[role]) / (STEPS - 1 - LAG.Tail);
+        f = f < 0 ? 0 : f > 1 ? 1 : f;
+        truePos.push(petal(BASE, pr.dir, pr.Ra, pr.Rb, f * TWO_PI));
+      }
       // heard[] — Advanced team drops off-mesh mid-ride
       const heard = [];
       for (let i = 0; i < STEPS; i++) heard.push(!(k === "B" && i >= ADV_OUT[0] && i < ADV_OUT[1]));

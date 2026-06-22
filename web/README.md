@@ -10,10 +10,13 @@ cd web && python3 -m http.server 8080   # then http://localhost:8080
 (Needs internet for the Leaflet library + OpenStreetMap tiles.)
 
 ## What you're seeing
-A simulated follow-the-leader practice: two teams (Red, Blue) looping the Wissahickon,
-each with Lead / Mid / Tail strung out by realistic lag. Press ▶ to play the timelapse,
-drag the scrubber to scan the ride, watch each team's **spread** (lead→tail distance)
-update live.
+A simulated follow-the-leader practice: all **4 skill teams** (Beginner / Intermediate /
+Proficient / Advanced) start at the one parking-lot 🏁 base, **fan out on different
+bearings**, loop their own terrain, and **converge back to base** — beginners stay close,
+advanced range farthest (and branch off-mesh, greying out, when they get too far). Each
+team is Lead / Mid / Tail strung out by realistic lag. Press ▶ to play the timelapse, drag
+the scrubber to scan the ride, watch each team's **spread** (lead→tail distance) update
+live, and watch the injury / equipment status pills fire.
 
 ## Where real data plugs in
 One seam — `DataSource` in `index.html`:
