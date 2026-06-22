@@ -39,11 +39,12 @@ timelapse. **None of it needs our firmware module.**
 Via the official **`@meshtastic/js`** client library, which handles the protobufs:
 
 - **BLE (Web Bluetooth)** — live, direct phone↔radio. The L1 is nRF52 = BLE only, so
-  this is the live path. ⚠️ **Web Bluetooth works in Chrome/Edge on Android + desktop,
-  but NOT iOS Safari.** If the phone is an iPhone, live-in-browser is blocked by Apple —
-  fall back to the official app for live, and use this SPA for replay/timelapse (which
-  needs no live connection). **→ open question: what's the phone, iOS or Android?** It
-  only gates the *live* path; everything below is built regardless.
+  this is the live path. Works in Chrome/Edge on Android + desktop. **→ DECIDED:
+  Android.** Web Bluetooth is our live path — the SPA talks straight to the radio, no
+  app middleman. **iOS deferred** ("eventually we'll cover iPhone"): Apple blocks Web
+  Bluetooth in Safari, so when we get there the timelapse/replay view already works on
+  any browser (no live link needed), and the live side becomes a native or PWA wrapper —
+  or it reuses the dog-map server feed. None of that gates what we build now.
 - **Serial** — a radio on USB to a laptop (handy for dev/testing).
 - **Replay** — positions logged to a file / MQTT / the homelab, fed to the map after the
   ride. This is the timelapse path and needs no live link at all.
