@@ -25,13 +25,20 @@ dependency. This single rule is what forces a custom firmware module (below).
 
 ## Teams & roles
 
-- 4 color teams: **red, yellow, green, blue** — ~3 coaches each.
-- Roles within a color: **leader, middle, tail.**
+- **4 teams = the 4 skill groups:** beginner, intermediate, proficient, advanced (the
+  older kids). Each gets a color (red / yellow / green / blue) as its UI handle, ~3
+  coaches each → 4 × 3 = the 12 radios. Color is the handle; skill is the meaning.
+- Roles within a team: **leader, middle, tail.**
 - Leader presses "leader" → screen shows distance/direction to their followers.
 - Followers see a big arrow + distance to the leader, smaller readout to the
   other follower. Button cycles targets.
-- All 12 radios share ONE mesh so packets relay for max range — color is a filter
-  on top, not a separate network.
+- All 12 radios share ONE mesh so packets relay for max range — team is a filter on
+  top, not a separate network.
+- **Groups have very different profiles:** beginners ride slow / short / tight; the
+  advanced kids go fast and far. Per-team thresholds (tail-lag distance, map zoom,
+  "spread" expectations) should scale with the group — a 200 m gap is panic for
+  beginners, normal for the advanced crew. The advanced group is the mesh-range stress
+  case: most likely to branch out of range and want the base-relay node.
 
 ## Architecture
 
@@ -157,6 +164,12 @@ The thing that makes the embellishment true:
    color/role tagged. Injury rates an urgent alert (louder buzz); equipment is a quiet
    ping. The *manual* partner to the automatic tail-lag alert (#5), and a sibling to
    hazard waypoints (#6 marks a *place*; this marks your *status*).
+
+8. **Cross-traffic alert (low-priority nicety).** *Usually you see each other at a
+   crossing*, so this isn't load-bearing — its one real niche is the **speed-mismatched
+   blind crossing** (advanced kids bombing into a beginner group). Metric: range-rate (a
+   cross-team node closing fast within ~200m) + proximity-triggered faster beaconing.
+   Build only if the field asks for it.
 
 **Explicitly NOT in MVP:** audio, geofencing, the custom phone app/timelapse (the
 official app covers live viewing day one). Those come after the radios prove out.
