@@ -11,9 +11,10 @@ validated and we start the module.
 - The 915 MHz antennas on hand.
 
 ## 1. Flash stock Meshtastic (each of the 3)
-- The L1 is nRF52840 → **UF2 flow**: double-tap reset to expose the USB drive, drag the L1 Meshtastic `.uf2` onto it.
+- The L1 is nRF52840 → **UF2 flow**: double-tap reset, a USB drive named **`Tracker L1`** appears, drag the L1 Meshtastic `.uf2` onto it. It reboots installed.
+- ⚠️ **USB UF2 only — never flash over BLE / NRF-OTA.** Seeed's own warning: OTA can brick the board dead. A wrong *app* `.uf2` is harmless (double-tap back to the `Tracker L1` drive, drop a good one); only a bad *bootloader* bricks, and normal flashing never touches it.
 - Firmware + exact steps on the device page: <https://meshtastic.org/docs/hardware/devices/seeed-studio/wio-series/tracker-l1/>
-- (Or use <https://flasher.meshtastic.org> and pick the Wio Tracker L1 target.)
+- (Or use <https://flasher.meshtastic.org> and pick the Wio Tracker L1 target. On nRF52 the flasher only triggers DFU — you still drag the `.uf2`, so double-tap+drag is the reliable path either way.)
 
 ## 2. Set region FIRST — or it won't transmit
 - Region = **US** (US_915).  `meshtastic --set lora.region US`

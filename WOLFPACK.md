@@ -3,7 +3,7 @@
 Follow-the-leader for mountain bike coaches. LoRa mesh radios that show every
 rider which way the pack went — no phone, no signal, no problem.
 
-> Status: spec'd, building. Hardware inbound. This doc is the blueprint.
+> Status: spec'd, building. **Hardware in hand — 3× Wio Tracker L1, bringing up on stock (Phase 1).** This doc is the blueprint.
 
 ## The problem it solves
 
