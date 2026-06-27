@@ -82,3 +82,19 @@ meshtastic --set position.gps_mode ENABLED
 meshtastic --set position.position_broadcast_secs 30
 meshtastic --set position.position_broadcast_smart_enabled false
 ```
+
+---
+
+## Troubleshooting: flashed but no serial port (Linux / Arch)
+
+Lived through all of these going from "flashed" to `/dev/ttyACM0`. The USB PID tells you the mode:
+
+- **`lsusb` shows `2886:1667`** → UF2 **bootloader** (a ~32 MB `Adafruit nRF UF2` mass-storage drive). There is **no serial port** in this mode. **Single-tap RESET** (a *double*-tap is what *enters* the bootloader) or replug to boot the app. If it bounces straight back to `1667`, the app image didn't take — re-drag the `.uf2` onto the drive.
+- **`lsusb` shows `2886:1668`** → **app running** (Meshtastic) → you should get `/dev/ttyACM0`.
+- **App mode (`1668`) but no `/dev/ttyACM*`** → the `cdc_acm` driver didn't bind. `sudo modprobe cdc_acm`. If that fails with `Module cdc_acm not found in /lib/modules/$(uname -r)`, you **updated the kernel and didn't reboot** (the running kernel's modules got swapped out from under it) — **reboot**, and `cdc_acm` autoloads on plug-in afterward.
+- **`Permission denied` opening the port** (meshtui / CLI) → on Arch, serial ports are group **`uucp`** (not Debian's `dialout`): `sudo usermod -aG uucp $USER`, then re-login or `newgrp uucp`.
+- **Stable device name** (survives renumbering across the 3 units): `ls -l /dev/serial/by-id/` → `usb-Seeed_..._Tracker_L1-... -> ../../ttyACM0`.
+
+## Note on position (bench vs. field)
+
+Indoors the nodes won't hold a real 3D fix. If all three report an **identical lat/lng**, they're on a seeded/shared position, not live GPS — three real fixes are never identical. **Altitude scatter between clustered units is normal GPS** (vertical accuracy is 2–3× worse than horizontal), and it's cosmetic for Wolfpack — nav is horizontal distance + bearing, altitude is never in that math. Don't chase altitude calibration. Validate outside, clear sky, ~2–5 min for a cold fix.
