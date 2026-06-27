@@ -132,6 +132,15 @@ Build skeleton is well-trodden: copy `ReplyModule`, register in
 `src/modules/Modules.cpp`, wire the frame into the `Screen` frame list the way the
 favorite-node frames do. The Module API is documented.
 
+> **Build status — slice 2 done (see [`firmware/`](firmware/)).** Baseline builds clean for
+> `seeed_wio_tracker_L1` (upstream 2.8.0 / `ec5d230`). The color/role broadcast module is
+> implemented + compile-verified: **+896 B flash → 88.5% (~92 KB headroom)**, static RAM
+> unchanged. The pure pack/parse/team-filter logic is unit-tested on the host (the native
+> env needs `libyaml-cpp-dev`). Confirmed against the real tree: `SinglePortModule` on
+> `PRIVATE_APP` (256), heading from `estimatedHeading()` (no compass on the L1), screen frame
+> via the `wantUIFrame`/`drawFrame` hook. Canonical drop-in source + apply steps live in
+> [`firmware/INTEGRATION.md`](firmware/INTEGRATION.md). **Next: the leader-arrow Screen frame.**
+
 **Rejected alternative:** stock firmware + a companion device doing the math
 re-introduces a phone/Pi/watch as a *dependency* — violates the core rule. The module
 is the only path to "radios alone run the show," and it's now a small one.
@@ -276,8 +285,11 @@ setup, sub-GHz enablement) and the protobufs. We don't start the watch layer col
    arrow. (Bare Heltec LoRa boards have none; the Wio L1 and SenseCAP T1000 both do.)
 3. **Start small or full 12?** Recommend flashing **3 nodes first** (one color:
    leader + middle + tail), prove it on a real ride, then scale.
-4. **Repo home?** Committed locally — point me at a Gitea remote (or say go and I'll
-   create one) so CI builds firmware on push.
+4. **Repo home — RESOLVED.** Canonical on self-hosted Gitea (`atmarx/meshtastic`,
+   Woodpecker CI). **License: GPL-3.0** (matches the Meshtastic firmware fork). A public
+   GitHub mirror is **deferred until the Wolfpack module ships** — until there's a working
+   flashable piece it's just ideas, so we hold. Push-mirror from Gitea when ready; the
+   17-commit evolution stays (don't squash — the seams are the story).
 
 ## Build phases
 
