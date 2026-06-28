@@ -16,8 +16,8 @@ build toolchain. Built from this repo's module source dropped into upstream
    (Red/Orange/Yellow/Green/Blue/Violet), then a position (Lead/Mid/Sweep). Click
    the HUD frame any time to change it. Lead is one-per-color; extra Mid/Sweep get
    auto-numbered (`RM`, `RM2`, …).
-4. **Battery calibration:** stock ec5d230 reads the L1 battery ~21% low. Fix it
-   per node (persists across flashes): `meshtastic --set power.adc_multiplier_override 2.54`
+4. **Battery:** auto-calibrated — the firmware sets the L1 `adc_multiplier_override`
+   to 2.54 on boot (stock ec5d230 reads ~21% low). No action needed.
 
 > ⚠️ **Never flash over BLE / NRF-OTA on the L1** — it can brick the board. USB
 > UF2 only. A wrong *app* UF2 is harmless (double-tap back to the drive, drop a

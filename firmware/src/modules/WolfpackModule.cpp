@@ -9,6 +9,7 @@
 #include "graphics/ScreenFonts.h"       // FONT_SMALL, FONT_HEIGHT_SMALL
 #include "graphics/SharedUIDisplay.h"   // drawCommonHeader, SCREEN_WIDTH
 #include "graphics/draw/CompassRenderer.h"
+#include "graphics/draw/NotificationRenderer.h" // isOverlayBannerShowing()
 #endif
 
 WolfpackModule *wolfpackModule;
@@ -25,6 +26,16 @@ WolfpackModule::WolfpackModule()
 
 int32_t WolfpackModule::runOnce()
 {
+    // Workaround for an upstream L1 battery regression: ec5d230 ships the variant
+    // with ADC_MULTIPLIER 2.0, which reads ~21% low on this board (3.93V cell ->
+    // 3.10V shown). Set the runtime override once; it's re-read live (~5s) so it
+    // applies without a reboot, persists, and we leave any user-set value alone.
+    if (config.power.adc_multiplier_override <= 0.0f) {
+        config.power.adc_multiplier_override = 2.54f;
+        nodeDB->saveToDisk(SEGMENT_CONFIG);
+        LOG_INFO("Wolfpack: set L1 adc_multiplier_override=2.54 (stock reads low)");
+    }
+
     WolfpackColor color;
     WolfpackRole role;
     wp_parseColorRole(owner.short_name, color, role);
@@ -417,6 +428,10 @@ int WolfpackModule::handleInputEvent(const InputEvent *event)
     // Only a click, and only while our HUD frame is the one on screen (it drew
     // very recently). Otherwise pass through so we don't hijack carousel nav.
     if (!event || event->inputEvent != INPUT_BROKER_SELECT)
+        return 0;
+    // A banner/picker is already up — that SELECT belongs to it, not us. (This is
+    // what caused the color picker to "reprompt" on every selection.)
+    if (graphics::NotificationRenderer::isOverlayBannerShowing())
         return 0;
     if (millis() - lastFrameDrawMs > 1500)
         return 0;

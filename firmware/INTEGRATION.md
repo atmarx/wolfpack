@@ -76,14 +76,16 @@ firmware reported 3.10 V). Older Meshtastic firmware read it correctly, so this 
 an upstream calibration regression for the L1. The board's true divider is ~**2.54**
 (`2.0 × 3.93 / 3.10`).
 
-Fix without reflashing — per node, persists in config across firmware updates:
+Slice 4 fixes this automatically: `WolfpackModule::runOnce()` sets
+`config.power.adc_multiplier_override = 2.54` on boot **if unset** (the multiplier
+is re-read live every ~5s, so it applies without a reboot and persists). A value
+you set yourself is respected:
 
 ```bash
 meshtastic --set power.adc_multiplier_override 2.54
 ```
 
-(Optional permanent bake: patch the variant's `ADC_MULTIPLIER 2.0 → 2.54`. Worth
-reporting upstream.)
+Worth reporting upstream — the L1 divider is ~2.54, not 2.0.
 
 ## Files and destinations
 
