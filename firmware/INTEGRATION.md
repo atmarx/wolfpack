@@ -1,4 +1,4 @@
-# Wolfpack — firmware integration (slices 2–3: broadcast + two-up compass HUD)
+# Wolfpack — firmware integration (slices 2–4: broadcast + HUD + team picker)
 
 This `firmware/` subtree holds the **canonical, hand-written** Wolfpack module
 source. It is *not* a fork of the Meshtastic tree — it's the set of files you
@@ -42,6 +42,48 @@ nearest two + a `+N` marker (no silent cap; future 4th-node paging is a follow-u
 No new files and **no `Modules.cpp` change** beyond slice 2 — the frame is
 overrides on the existing `WolfpackModule`, and `wantUIFrame()` returning true is
 enough because modules are constructed before Screen builds its frameset.
+
+## What slice 4 adds (on-device team picker)
+
+A coach sets their team on the device — no phone, no CLI. The picker rides on
+Meshtastic's native banner overlay (`screen->showOverlayBanner`), so it owns input
+routing, rendering, and timeout; we just supply options + a callback.
+
+- **6 colors** (Red/Orange/Yellow/Green/Blue/Violet) then **3 positions**
+  (Lead/Mid/**Sweep** — renamed from "tail"). Beacon version bumped to **2** (the
+  color enum was renumbered into rainbow order; a v1 beacon is now rejected).
+- **Auto-launches** from `runOnce()` on a node with no team set; **re-opens** on a
+  click on the HUD frame (an `InputBroker` observer, gated by a last-draw "is my
+  frame current?" proxy so it never hijacks carousel navigation).
+- On confirm it **sets the owner short-name** (`owner` is a reference to
+  `devicestate.owner`; persisted via `saveToDisk(SEGMENT_DEVICESTATE)`):
+  - **Lead is exclusive per color** — refused if a same-color Lead is already
+    heard; the picker reopens.
+  - **Mid/Sweep auto-suffix** on collision: `RM` → `RM2` → `RM3`.
+- **Lead-uniqueness backstop** in `handleReceived()`: if a same-color Lead appears
+  from a *lower* node-number (deterministic tiebreak — they keep it), we banner
+  "2x <COLOR> LEAD" and reopen the picker. Covers the out-of-range case the
+  pick-time check can't.
+
+Still only the slice-2 `Modules.cpp` registration — everything else is contained
+in `WolfpackModule` + the pure helpers in `WolfpackProtocol.h`.
+
+## L1 battery calibration (upstream regression — important)
+
+Stock ec5d230 ships the `seeed_wio_tracker_L1` variant with `ADC_MULTIPLIER 2.0`,
+which **reads the battery ~21% low** on our boards (measured 3.93 V at the cell,
+firmware reported 3.10 V). Older Meshtastic firmware read it correctly, so this is
+an upstream calibration regression for the L1. The board's true divider is ~**2.54**
+(`2.0 × 3.93 / 3.10`).
+
+Fix without reflashing — per node, persists in config across firmware updates:
+
+```bash
+meshtastic --set power.adc_multiplier_override 2.54
+```
+
+(Optional permanent bake: patch the variant's `ADC_MULTIPLIER 2.0 → 2.54`. Worth
+reporting upstream.)
 
 ## Files and destinations
 
@@ -110,12 +152,12 @@ region (the S140 v7 SoftDevice + bootloader eat the rest of the 1 MB).
 |---|---|---|
 | Stock 2.8.0 | 88.4% — 720472 B | 46.9% — 116596 B |
 | + Wolfpack slice 2 | 88.5% — 721368 B | 46.9% — 116596 B |
-| + Wolfpack slice 3 | **88.8% — 723928 B** | 46.9% — 116596 B |
+| + Wolfpack slice 3 | 88.8% — 723928 B | 46.9% — 116596 B |
+| + Wolfpack slice 4 | **89.0% — 725400 B** | 46.9% — 116644 B |
 
-Cost of slice 3 (the HUD): **+2560 bytes flash (+0.31 pts)** over slice 2, static
-RAM unchanged (the candidate arrays in `drawFrame` are stack-local). Roughly
-**~89 KB of flash headroom remains**. The build's own nRF52 guards confirm it:
-the image ends 73 KB clear of the warm/bootloader region.
+Cost of slice 4 (the picker): **+1472 bytes flash** over slice 3 (the banner
+overlay is stock — we only add options + callbacks), +48 bytes static RAM (the new
+picker-state members). Roughly **~87 KB of flash headroom remains**.
 
 ## Notes / decisions
 

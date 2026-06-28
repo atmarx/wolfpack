@@ -29,6 +29,19 @@ int32_t WolfpackModule::runOnce()
     WolfpackRole role;
     wp_parseColorRole(owner.short_name, color, role);
 
+#if HAS_SCREEN
+    // Attach to the input broker once it exists (click-to-pick re-trigger).
+    if (!inputObserved && inputBroker) {
+        inputObserver.observe(inputBroker);
+        inputObserved = true;
+    }
+    // First boot with no team set: pop the picker so you can choose on-device.
+    if (!autoPickerShown && screen && (color == WP_COLOR_NONE || role == WP_ROLE_NONE)) {
+        autoPickerShown = true;
+        launchTeamPicker();
+    }
+#endif
+
     if (color == WP_COLOR_NONE || role == WP_ROLE_NONE) {
         LOG_INFO("Wolfpack: short_name '%s' has no color/role, skip beacon", owner.short_name);
         return WP_BROADCAST_INTERVAL_MS;
@@ -50,6 +63,25 @@ ProcessMessage WolfpackModule::handleReceived(const meshtastic_MeshPacket &mp)
     if (wp_unpackBeacon(mp.decoded.payload.bytes, mp.decoded.payload.size, beacon)) {
         upsertPeer(mp.from, beacon.color, beacon.role);
         LOG_DEBUG("Wolfpack: peer 0x%x color=%u role=%u", mp.from, beacon.color, beacon.role);
+
+#if HAS_SCREEN
+        // Lead-uniqueness backstop for the out-of-range case the picker can't
+        // prevent: if a same-color Lead appears and outranks us (lower node-num
+        // wins), warn and reopen the picker so we re-pick. Throttled.
+        if (beacon.role == WP_LEADER && screen) {
+            WolfpackColor myColor;
+            WolfpackRole myRole;
+            wp_parseColorRole(owner.short_name, myColor, myRole);
+            if (myRole == WP_LEADER && myColor == (WolfpackColor)beacon.color && mp.from < nodeDB->getNodeNum() &&
+                (millis() - lastConflictBannerMs > 15000)) {
+                lastConflictBannerMs = millis();
+                char msg[32];
+                snprintf(msg, sizeof(msg), "2x %s LEAD", wp_colorName(myColor));
+                screen->showSimpleBanner(msg, 5000);
+                showColorPicker();
+            }
+        }
+#endif
     }
     return ProcessMessage::CONTINUE;
 }
@@ -166,6 +198,7 @@ static void wpDrawCell(OLEDDisplay *display, int16_t colX, int16_t colW, int16_t
 void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
     (void)state;
+    lastFrameDrawMs = millis(); // focus proxy for the click-to-pick re-trigger
     display->clear();
     display->setFont(FONT_SMALL);
 
@@ -173,11 +206,9 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
     WolfpackRole myRole;
     wp_parseColorRole(owner.short_name, myColor, myRole);
 
-    static const char *const COLW[] = {"--", "RED", "YEL", "GRN", "BLU"};
-    static const char *const ROLEW[] = {"-", "Lead", "Mid", "Tail"};
-    char title[20];
+    char title[24];
     if (myColor != WP_COLOR_NONE)
-        snprintf(title, sizeof(title), "Wolf %s-%s", COLW[myColor], ROLEW[myRole]);
+        snprintf(title, sizeof(title), "%s %s", wp_colorName(myColor), wp_roleName(myRole));
     else
         snprintf(title, sizeof(title), "Wolfpack");
     graphics::drawCommonHeader(display, x, y, title);
@@ -191,8 +222,8 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
 
     // No team identity yet — guide setup instead of drawing meaningless arrows.
     if (myColor == WP_COLOR_NONE) {
-        display->drawString(x + w / 2, top + 2, "Set short-name");
-        display->drawString(x + w / 2, (int16_t)(top + 2 + FONT_HEIGHT_SMALL), "color+role e.g. RL");
+        display->drawString(x + w / 2, top + 2, "No team set");
+        display->drawString(x + w / 2, (int16_t)(top + 2 + FONT_HEIGHT_SMALL), "Click to pick");
         display->setTextAlignment(TEXT_ALIGN_LEFT);
         return;
     }
@@ -263,6 +294,134 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
     }
 
     display->setTextAlignment(TEXT_ALIGN_LEFT);
+}
+
+// --- Slice 4: on-device team picker ----------------------------------------
+
+void WolfpackModule::launchTeamPicker()
+{
+    showColorPicker();
+}
+
+void WolfpackModule::showColorPicker()
+{
+    if (!screen)
+        return;
+    // Rainbow order; last entry is an explicit Cancel for click-only devices.
+    static const char *opts[] = {"Red", "Orange", "Yellow", "Green", "Blue", "Violet", "Cancel"};
+
+    WolfpackColor cur;
+    WolfpackRole curRole;
+    wp_parseColorRole(owner.short_name, cur, curRole);
+
+    graphics::BannerOverlayOptions o;
+    o.message = "Team color";
+    o.optionsArrayPtr = opts;
+    o.optionsCount = WP_NUM_COLORS + 1; // colors + Cancel
+    o.durationMs = 30000;
+    o.InitialSelected = (cur != WP_COLOR_NONE) ? (int8_t)(cur - WP_RED) : 0;
+    o.bannerCallback = [this](int idx) {
+        if (idx < 0 || idx >= (int)WP_NUM_COLORS) // Cancel / dismissed
+            return;
+        this->pendingColor = wp_colorFromIndex(idx);
+        this->showPositionPicker();
+    };
+    screen->showOverlayBanner(o);
+}
+
+void WolfpackModule::showPositionPicker()
+{
+    if (!screen)
+        return;
+    static const char *opts[] = {"Lead", "Mid", "Sweep", "Cancel"};
+    const WolfpackColor color = pendingColor;
+
+    graphics::BannerOverlayOptions o;
+    o.message = "Position";
+    o.optionsArrayPtr = opts;
+    o.optionsCount = WP_NUM_ROLES + 1; // roles + Cancel
+    o.durationMs = 30000;
+    o.InitialSelected = 0;
+    o.bannerCallback = [this, color](int idx) {
+        if (idx < 0 || idx >= (int)WP_NUM_ROLES) // Cancel / dismissed
+            return;
+        this->applyTeamSelection(color, wp_roleFromIndex(idx));
+    };
+    screen->showOverlayBanner(o);
+}
+
+void WolfpackModule::applyTeamSelection(WolfpackColor color, WolfpackRole role)
+{
+    if (color == WP_COLOR_NONE || role == WP_ROLE_NONE || !screen)
+        return;
+
+    const NodeNum me = nodeDB->getNodeNum();
+
+    // Lead is exclusive per color: if one is already on the air, refuse + reopen.
+    if (role == WP_LEADER && teamHasLeader(color, me)) {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "%s already has a Lead", wp_colorName(color));
+        screen->showSimpleBanner(msg, 4000);
+        showColorPicker();
+        return;
+    }
+
+    // Short-name = color char + role char + (Mid/Sweep) sequential collision suffix.
+    char code[5];
+    const char cc = wp_colorChar(color);
+    const char rc = wp_roleChar(role);
+    if (role == WP_LEADER) {
+        snprintf(code, sizeof(code), "%c%c", cc, rc);
+    } else {
+        const uint8_t existing = countTeamRole(color, role, me);
+        if (existing == 0)
+            snprintf(code, sizeof(code), "%c%c", cc, rc);
+        else
+            snprintf(code, sizeof(code), "%c%c%u", cc, rc, (unsigned)(existing + 1)); // RM -> RM2 -> RM3
+    }
+
+    strncpy(owner.short_name, code, sizeof(owner.short_name));
+    owner.short_name[sizeof(owner.short_name) - 1] = '\0';
+    snprintf(owner.long_name, sizeof(owner.long_name), "%s %s", wp_colorName(color), wp_roleName(role));
+    nodeDB->saveToDisk(SEGMENT_DEVICESTATE); // owner is a reference to devicestate.owner
+
+    char done[24];
+    snprintf(done, sizeof(done), "You are %s", code);
+    screen->showSimpleBanner(done, 3000);
+    LOG_INFO("Wolfpack: team set to %s (%s %s)", code, wp_colorName(color), wp_roleName(role));
+
+    setIntervalFromNow(0); // beacon the new identity right away
+}
+
+bool WolfpackModule::teamHasLeader(WolfpackColor color, NodeNum exclude) const
+{
+    for (const WolfpackPeer *p = peersBegin(); p != peersEnd(); ++p) {
+        if (p->num != exclude && (WolfpackColor)p->color == color && (WolfpackRole)p->role == WP_LEADER)
+            return true;
+    }
+    return false;
+}
+
+uint8_t WolfpackModule::countTeamRole(WolfpackColor color, WolfpackRole role, NodeNum exclude) const
+{
+    uint8_t n = 0;
+    for (const WolfpackPeer *p = peersBegin(); p != peersEnd(); ++p) {
+        if (p->num != exclude && (WolfpackColor)p->color == color && (WolfpackRole)p->role == role)
+            n++;
+    }
+    return n;
+}
+
+int WolfpackModule::handleInputEvent(const InputEvent *event)
+{
+    // Only a click, and only while our HUD frame is the one on screen (it drew
+    // very recently). Otherwise pass through so we don't hijack carousel nav.
+    if (!event || event->inputEvent != INPUT_BROKER_SELECT)
+        return 0;
+    if (millis() - lastFrameDrawMs > 1500)
+        return 0;
+    launchTeamPicker();
+    return 1; // consumed
 }
 
 #endif // HAS_SCREEN

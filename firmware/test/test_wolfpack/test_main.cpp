@@ -36,7 +36,7 @@ void test_pack_unpack_roundtrip()
 
 void test_pack_rejects_short_buffer()
 {
-    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_TAIL, 0};
+    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_SWEEP, 0};
     uint8_t buf[3] = {0};
     TEST_ASSERT_EQUAL_size_t(0, wp_packBeacon(in, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_size_t(0, wp_packBeacon(in, buf, 0));
@@ -52,8 +52,10 @@ void test_unpack_rejects_short_buffer()
 void test_unpack_rejects_bad_version()
 {
     WolfpackBeacon out;
-    uint8_t v2[4] = {2, WP_RED, WP_LEADER, 0};
-    TEST_ASSERT_FALSE(wp_unpackBeacon(v2, sizeof(v2), out));
+    uint8_t v1[4] = {1, WP_RED, WP_LEADER, 0}; // slice-3 beacon: now rejected
+    TEST_ASSERT_FALSE(wp_unpackBeacon(v1, sizeof(v1), out));
+    uint8_t v3[4] = {3, WP_RED, WP_LEADER, 0};
+    TEST_ASSERT_FALSE(wp_unpackBeacon(v3, sizeof(v3), out));
     uint8_t v0[4] = {0, WP_RED, WP_LEADER, 0};
     TEST_ASSERT_FALSE(wp_unpackBeacon(v0, sizeof(v0), out));
 }
@@ -77,25 +79,43 @@ static void expect_parse(const char *s, WolfpackColor ec, WolfpackRole er)
 
 void test_parse_full_grid()
 {
-    expect_parse("RL", WP_RED, WP_LEADER);
-    expect_parse("RM", WP_RED, WP_MIDDLE);
-    expect_parse("RT", WP_RED, WP_TAIL);
-    expect_parse("YL", WP_YELLOW, WP_LEADER);
-    expect_parse("YM", WP_YELLOW, WP_MIDDLE);
-    expect_parse("YT", WP_YELLOW, WP_TAIL);
-    expect_parse("GL", WP_GREEN, WP_LEADER);
-    expect_parse("GM", WP_GREEN, WP_MIDDLE);
-    expect_parse("GT", WP_GREEN, WP_TAIL);
-    expect_parse("BL", WP_BLUE, WP_LEADER);
-    expect_parse("BM", WP_BLUE, WP_MIDDLE);
-    expect_parse("BT", WP_BLUE, WP_TAIL);
+    // 6 colors x 3 roles (sweep = 'S').
+    const char *codes[18] = {"RL", "RM", "RS", "OL", "OM", "OS", "YL", "YM", "YS",
+                             "GL", "GM", "GS", "BL", "BM", "BS", "VL", "VM", "VS"};
+    const WolfpackColor cols[6] = {WP_RED, WP_ORANGE, WP_YELLOW, WP_GREEN, WP_BLUE, WP_VIOLET};
+    const WolfpackRole roles[3] = {WP_LEADER, WP_MIDDLE, WP_SWEEP};
+    for (int c = 0; c < 6; c++)
+        for (int r = 0; r < 3; r++)
+            expect_parse(codes[c * 3 + r], cols[c], roles[r]);
+}
+
+void test_parse_legacy_tail()
+{
+    // Slice-3 named the rear rider "tail" ('T'); it must still resolve to sweep.
+    expect_parse("RT", WP_RED, WP_SWEEP);
+    expect_parse("BT", WP_BLUE, WP_SWEEP);
+}
+
+void test_color_role_helpers()
+{
+    TEST_ASSERT_EQUAL_CHAR('R', wp_colorChar(WP_RED));
+    TEST_ASSERT_EQUAL_CHAR('O', wp_colorChar(WP_ORANGE));
+    TEST_ASSERT_EQUAL_CHAR('V', wp_colorChar(WP_VIOLET));
+    TEST_ASSERT_EQUAL_CHAR('S', wp_roleChar(WP_SWEEP));
+    TEST_ASSERT_EQUAL_STRING("Orange", wp_colorName(WP_ORANGE));
+    TEST_ASSERT_EQUAL_STRING("Sweep", wp_roleName(WP_SWEEP));
+    // index round-trip through the rainbow order
+    TEST_ASSERT_EQUAL_UINT8(WP_RED, wp_colorFromIndex(0));
+    TEST_ASSERT_EQUAL_UINT8(WP_VIOLET, wp_colorFromIndex(5));
+    TEST_ASSERT_EQUAL_UINT8(WP_COLOR_NONE, wp_colorFromIndex(9));
+    TEST_ASSERT_EQUAL_UINT8(WP_SWEEP, wp_roleFromIndex(2));
 }
 
 void test_parse_case_insensitive()
 {
     expect_parse("rl", WP_RED, WP_LEADER);
     expect_parse("gm", WP_GREEN, WP_MIDDLE);
-    expect_parse("bT", WP_BLUE, WP_TAIL);
+    expect_parse("bs", WP_BLUE, WP_SWEEP);
     expect_parse("Yl", WP_YELLOW, WP_LEADER);
 }
 
@@ -193,6 +213,8 @@ void setup()
     RUN_TEST(test_unpack_rejects_bad_version);
     RUN_TEST(test_unpack_rejects_null);
     RUN_TEST(test_parse_full_grid);
+    RUN_TEST(test_parse_legacy_tail);
+    RUN_TEST(test_color_role_helpers);
     RUN_TEST(test_parse_case_insensitive);
     RUN_TEST(test_parse_garbage_partial_null);
     RUN_TEST(test_isSameTeam_truth_table);

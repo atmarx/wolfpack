@@ -11,14 +11,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// 4 skill teams, identified by the first char of the node's short_name.
-enum WolfpackColor : uint8_t { WP_COLOR_NONE = 0, WP_RED, WP_YELLOW, WP_GREEN, WP_BLUE };
+// 6 teams (rainbow order), identified by the first char of the node's short_name.
+enum WolfpackColor : uint8_t { WP_COLOR_NONE = 0, WP_RED, WP_ORANGE, WP_YELLOW, WP_GREEN, WP_BLUE, WP_VIOLET };
+static const uint8_t WP_NUM_COLORS = 6;
 
 // Position in the line, from the second char of the short_name.
-enum WolfpackRole : uint8_t { WP_ROLE_NONE = 0, WP_LEADER, WP_MIDDLE, WP_TAIL };
+// (Slice 4 renamed "tail" -> "sweep"; the wire value is unchanged.)
+enum WolfpackRole : uint8_t { WP_ROLE_NONE = 0, WP_LEADER, WP_MIDDLE, WP_SWEEP };
+static const uint8_t WP_NUM_ROLES = 3;
 
 // On-wire beacon. Fixed 4 bytes, no padding assumptions — we pack/unpack by hand.
-static const uint8_t WP_BEACON_VERSION = 1;
+// Version 2 = slice-4 palette (6 colors). A v1 (slice-3) beacon is rejected rather
+// than mis-parsed, since the color enum was renumbered into rainbow order.
+static const uint8_t WP_BEACON_VERSION = 2;
 static const size_t WP_BEACON_SIZE = 4;
 
 // flags bitfield (reserved). bit0 = is_leader, held at 0 for this slice.
@@ -75,6 +80,9 @@ inline void wp_parseColorRole(const char *shortName, WolfpackColor &color, Wolfp
     case 'R':
         color = WP_RED;
         break;
+    case 'O':
+        color = WP_ORANGE;
+        break;
     case 'Y':
         color = WP_YELLOW;
         break;
@@ -83,6 +91,9 @@ inline void wp_parseColorRole(const char *shortName, WolfpackColor &color, Wolfp
         break;
     case 'B':
         color = WP_BLUE;
+        break;
+    case 'V':
+        color = WP_VIOLET;
         break;
     default:
         color = WP_COLOR_NONE;
@@ -99,8 +110,9 @@ inline void wp_parseColorRole(const char *shortName, WolfpackColor &color, Wolfp
     case 'M':
         role = WP_MIDDLE;
         break;
-    case 'T':
-        role = WP_TAIL;
+    case 'S':
+    case 'T': // legacy: slice-3 named the rear rider "tail"
+        role = WP_SWEEP;
         break;
     default:
         role = WP_ROLE_NONE;
@@ -184,4 +196,69 @@ inline uint8_t wp_twoNearest(const float *dists, uint8_t n, uint8_t out[2])
     if (best2 >= 0)
         out[count++] = (uint8_t)best2;
     return count;
+}
+
+// ----------------------------------------------------------------------------
+// Display + short-name code helpers (slice 4 picker). The short-name encodes the
+// team: char0 = color, char1 = role, optional trailing digit(s) = collision suffix.
+// ----------------------------------------------------------------------------
+
+inline char wp_colorChar(WolfpackColor c)
+{
+    switch (c) {
+    case WP_RED:    return 'R';
+    case WP_ORANGE: return 'O';
+    case WP_YELLOW: return 'Y';
+    case WP_GREEN:  return 'G';
+    case WP_BLUE:   return 'B';
+    case WP_VIOLET: return 'V';
+    default:        return '?';
+    }
+}
+
+inline char wp_roleChar(WolfpackRole r)
+{
+    switch (r) {
+    case WP_LEADER: return 'L';
+    case WP_MIDDLE: return 'M';
+    case WP_SWEEP:  return 'S';
+    default:        return '?';
+    }
+}
+
+inline const char *wp_colorName(WolfpackColor c)
+{
+    switch (c) {
+    case WP_RED:    return "Red";
+    case WP_ORANGE: return "Orange";
+    case WP_YELLOW: return "Yellow";
+    case WP_GREEN:  return "Green";
+    case WP_BLUE:   return "Blue";
+    case WP_VIOLET: return "Violet";
+    default:        return "--";
+    }
+}
+
+inline const char *wp_roleName(WolfpackRole r)
+{
+    switch (r) {
+    case WP_LEADER: return "Lead";
+    case WP_MIDDLE: return "Mid";
+    case WP_SWEEP:  return "Sweep";
+    default:        return "-";
+    }
+}
+
+// Map a picker list index (0..WP_NUM_COLORS-1) to a color, in rainbow order.
+inline WolfpackColor wp_colorFromIndex(int i)
+{
+    static const WolfpackColor ORDER[WP_NUM_COLORS] = {WP_RED, WP_ORANGE, WP_YELLOW, WP_GREEN, WP_BLUE, WP_VIOLET};
+    return (i >= 0 && i < (int)WP_NUM_COLORS) ? ORDER[i] : WP_COLOR_NONE;
+}
+
+// Map a picker list index (0..WP_NUM_ROLES-1) to a role.
+inline WolfpackRole wp_roleFromIndex(int i)
+{
+    static const WolfpackRole ORDER[WP_NUM_ROLES] = {WP_LEADER, WP_MIDDLE, WP_SWEEP};
+    return (i >= 0 && i < (int)WP_NUM_ROLES) ? ORDER[i] : WP_ROLE_NONE;
 }
