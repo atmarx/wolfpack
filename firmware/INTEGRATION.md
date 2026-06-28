@@ -65,6 +65,14 @@ routing, rendering, and timeout; we just supply options + a callback.
   "2x <COLOR> LEAD" and reopen the picker. Covers the out-of-range case the
   pick-time check can't.
 
+**Picker chaining is deferred** (a bugfix over the first slice-4 build): Meshtastic
+dismisses a banner via `resetBanner()` *immediately after* its selection callback
+returns (`NotificationRenderer.cpp` ~653), so a callback can't open the next banner
+— it gets wiped on the same tick. That made the color picker "re-prompt" forever.
+Instead the color/position callbacks only *record* the choice and advance a small
+`pickStep` state machine; `runOnce()` opens each next banner on a later tick, gated
+on `!isOverlayBannerShowing()`, ticking at 250 ms while a pick is in flight.
+
 Still only the slice-2 `Modules.cpp` registration — everything else is contained
 in `WolfpackModule` + the pure helpers in `WolfpackProtocol.h`.
 
@@ -86,6 +94,22 @@ meshtastic --set power.adc_multiplier_override 2.54
 ```
 
 Worth reporting upstream — the L1 divider is ~2.54, not 2.0.
+
+> ⚠️ **Open issue (under investigation, 2026-06-28):** after the override, field
+> units show **0% + a USB icon with nothing plugged in**. Root mechanism is now
+> understood from source: on the L1 there is *no real USB detection* —
+> `AnalogBatteryLevel::isVbusIn()` is simply `getBattVoltage() > ~4200 mV`
+> (full-battery + 10 mV; `Power.cpp` ~562, `OCV[0]=4190`, `NUM_CELLS=1`). Any
+> reading that crosses 4.2 V is inferred as "charger pumping in" → the cell is
+> treated as absent → percent hard-codes to 0 (`PowerStatus.h`). So the symptom
+> means the firmware is reading the battery **too high**. The read path is linear
+> in the multiplier (`Power.cpp` ~465), so 2.54 *should* land ~3.94 V (under 4.2),
+> which doesn't fit — implicating either a still-wrong multiplier or the **wrong
+> ADC pin** (`BATTERY_PIN = PIN_VBAT` = P0.31, vs the `BAT_READ` = P0.04 divider
+> the `variant.h` comment describes). **Do not treat 2.54 as final** until a device
+> `batMv` reading (the `Battery:` line at `Power.cpp` ~976, `--debug`) confirms what
+> it actually reads. This may be our own override misfiring, not strictly a 2.8
+> regression — confirm before reporting upstream.
 
 ## Files and destinations
 
@@ -155,7 +179,7 @@ region (the S140 v7 SoftDevice + bootloader eat the rest of the 1 MB).
 | Stock 2.8.0 | 88.4% — 720472 B | 46.9% — 116596 B |
 | + Wolfpack slice 2 | 88.5% — 721368 B | 46.9% — 116596 B |
 | + Wolfpack slice 3 | 88.8% — 723928 B | 46.9% — 116596 B |
-| + Wolfpack slice 4 | **89.0% — 725400 B** | 46.9% — 116644 B |
+| + Wolfpack slice 4 (+ picker fix) | **89.0% — 725640 B** | 46.9% — 116644 B |
 
 Cost of slice 4 (the picker): **+1472 bytes flash** over slice 3 (the banner
 overlay is stock — we only add options + callbacks), +48 bytes static RAM (the new

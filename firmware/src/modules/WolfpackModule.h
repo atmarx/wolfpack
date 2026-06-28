@@ -66,15 +66,33 @@ class WolfpackModule : public SinglePortModule, private concurrency::OSThread
     // --- Slice 4: on-device team picker (color + position) ---
     void launchTeamPicker(); // entry point: auto on first boot, or on a click
     void showColorPicker();
-    void showPositionPicker(); // applies pendingColor
-    void applyTeamSelection(WolfpackColor color, WolfpackRole role);
+    void showPositionPicker(); // uses pendingColor
+    // Apply the chosen identity. Returns false if it was refused (same-color Lead
+    // already exists) so runOnce() reopens the picker; true otherwise.
+    bool applyTeamSelection(WolfpackColor color, WolfpackRole role);
     // Lead is exclusive per color; Mid/Sweep are not (they collision-suffix).
     bool teamHasLeader(WolfpackColor color, NodeNum exclude) const;
     uint8_t countTeamRole(WolfpackColor color, WolfpackRole role, NodeNum exclude) const;
 
     CallbackObserver<WolfpackModule, const InputEvent *> inputObserver =
         CallbackObserver<WolfpackModule, const InputEvent *>(this, &WolfpackModule::handleInputEvent);
+    // The picker is a deferred state machine driven from runOnce(): a banner's
+    // selection callback can't open the next banner (NotificationRenderer calls
+    // resetBanner() right after the callback returns, wiping anything it opened),
+    // so callbacks only record the choice + advance this; runOnce() opens the next
+    // banner once the current overlay clears. WANT_* = "open next"; WAIT_* = "up".
+    enum PickStep : uint8_t {
+        WP_PICK_IDLE = 0,
+        WP_PICK_WANT_COLOR,
+        WP_PICK_WAIT_COLOR,
+        WP_PICK_WANT_POSITION,
+        WP_PICK_WAIT_POSITION,
+        WP_PICK_WANT_APPLY,
+    };
+
     WolfpackColor pendingColor = WP_COLOR_NONE; // color chosen, awaiting position
+    WolfpackRole pendingRole = WP_ROLE_NONE;    // position chosen, awaiting apply
+    PickStep pickStep = WP_PICK_IDLE;           // deferred picker flow state
     uint32_t lastFrameDrawMs = 0;               // when our HUD frame last drew (focus proxy)
     uint32_t lastConflictBannerMs = 0;          // throttle the 2x-Lead warning
     bool inputObserved = false;                 // attached to inputBroker yet?

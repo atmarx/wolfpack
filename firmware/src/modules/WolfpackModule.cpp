@@ -17,6 +17,10 @@ WolfpackModule *wolfpackModule;
 // One beacon per minute. Cheap, and slow enough not to perturb channel util.
 static constexpr int32_t WP_BROADCAST_INTERVAL_MS = 60 * 1000;
 
+// While a pick flow is in progress, tick fast so each banner opens promptly once
+// the previous overlay clears (selection callbacks also wake us immediately).
+static constexpr int32_t WP_PICK_TICK_MS = 250;
+
 WolfpackModule::WolfpackModule()
     : SinglePortModule("wolfpack", meshtastic_PortNum_PRIVATE_APP), concurrency::OSThread("Wolfpack")
 {
@@ -50,6 +54,46 @@ int32_t WolfpackModule::runOnce()
     if (!autoPickerShown && screen && (color == WP_COLOR_NONE || role == WP_ROLE_NONE)) {
         autoPickerShown = true;
         launchTeamPicker();
+    }
+
+    // Deferred picker state machine. A banner's selection callback can't open the
+    // next banner — NotificationRenderer calls resetBanner() right after the
+    // callback (NotificationRenderer.cpp ~653), wiping anything it opened — so the
+    // callbacks only record the choice + advance pickStep, and we open each banner
+    // here on a later tick, once the prior overlay has cleared.
+    if (pickStep != WP_PICK_IDLE) {
+        const bool overlayUp = graphics::NotificationRenderer::isOverlayBannerShowing();
+        switch (pickStep) {
+        case WP_PICK_WANT_COLOR:
+            if (!overlayUp) {
+                showColorPicker();
+                pickStep = WP_PICK_WAIT_COLOR;
+            }
+            break;
+        case WP_PICK_WANT_POSITION:
+            if (!overlayUp) {
+                showPositionPicker();
+                pickStep = WP_PICK_WAIT_POSITION;
+            }
+            break;
+        case WP_PICK_WANT_APPLY:
+            if (!overlayUp)
+                pickStep = applyTeamSelection(pendingColor, pendingRole) ? WP_PICK_IDLE : WP_PICK_WANT_COLOR;
+            break;
+        case WP_PICK_WAIT_COLOR:
+        case WP_PICK_WAIT_POSITION:
+            // Banner closed without the callback advancing us => cancel / timeout.
+            if (!overlayUp)
+                pickStep = WP_PICK_IDLE;
+            break;
+        default:
+            pickStep = WP_PICK_IDLE;
+            break;
+        }
+        // Re-enter promptly: the next runOnce re-parses the (possibly just-set)
+        // identity and beacons with current state, not the stale parse from the top
+        // of THIS call. Also keeps the flow responsive between banners.
+        return WP_PICK_TICK_MS;
     }
 #endif
 
@@ -89,7 +133,7 @@ ProcessMessage WolfpackModule::handleReceived(const meshtastic_MeshPacket &mp)
                 char msg[32];
                 snprintf(msg, sizeof(msg), "2x %s LEAD", wp_colorName(myColor));
                 screen->showSimpleBanner(msg, 5000);
-                showColorPicker();
+                launchTeamPicker(); // defer: opens once the warning banner clears
             }
         }
 #endif
@@ -311,7 +355,13 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
 
 void WolfpackModule::launchTeamPicker()
 {
-    showColorPicker();
+    if (!screen)
+        return;
+    // Don't open a banner straight from here — we may be inside a banner callback
+    // or handleReceived(). Just arm the state machine; runOnce() opens the color
+    // picker on the next tick, once any current overlay has cleared.
+    pickStep = WP_PICK_WANT_COLOR;
+    setIntervalFromNow(0);
 }
 
 void WolfpackModule::showColorPicker()
@@ -332,10 +382,14 @@ void WolfpackModule::showColorPicker()
     o.durationMs = 30000;
     o.InitialSelected = (cur != WP_COLOR_NONE) ? (int8_t)(cur - WP_RED) : 0;
     o.bannerCallback = [this](int idx) {
-        if (idx < 0 || idx >= (int)WP_NUM_COLORS) // Cancel / dismissed
+        if (idx < 0 || idx >= (int)WP_NUM_COLORS) { // Cancel / dismissed
+            this->pickStep = WP_PICK_IDLE;
             return;
+        }
+        // Only record + advance; runOnce() opens the position picker next tick.
         this->pendingColor = wp_colorFromIndex(idx);
-        this->showPositionPicker();
+        this->pickStep = WP_PICK_WANT_POSITION;
+        this->setIntervalFromNow(0);
     };
     screen->showOverlayBanner(o);
 }
@@ -345,7 +399,6 @@ void WolfpackModule::showPositionPicker()
     if (!screen)
         return;
     static const char *opts[] = {"Lead", "Mid", "Sweep", "Cancel"};
-    const WolfpackColor color = pendingColor;
 
     graphics::BannerOverlayOptions o;
     o.message = "Position";
@@ -353,18 +406,24 @@ void WolfpackModule::showPositionPicker()
     o.optionsCount = WP_NUM_ROLES + 1; // roles + Cancel
     o.durationMs = 30000;
     o.InitialSelected = 0;
-    o.bannerCallback = [this, color](int idx) {
-        if (idx < 0 || idx >= (int)WP_NUM_ROLES) // Cancel / dismissed
+    o.bannerCallback = [this](int idx) {
+        if (idx < 0 || idx >= (int)WP_NUM_ROLES) { // Cancel / dismissed
+            this->pickStep = WP_PICK_IDLE;
             return;
-        this->applyTeamSelection(color, wp_roleFromIndex(idx));
+        }
+        // Only record + advance; runOnce() applies it next tick (pendingColor was
+        // set by the color picker).
+        this->pendingRole = wp_roleFromIndex(idx);
+        this->pickStep = WP_PICK_WANT_APPLY;
+        this->setIntervalFromNow(0);
     };
     screen->showOverlayBanner(o);
 }
 
-void WolfpackModule::applyTeamSelection(WolfpackColor color, WolfpackRole role)
+bool WolfpackModule::applyTeamSelection(WolfpackColor color, WolfpackRole role)
 {
     if (color == WP_COLOR_NONE || role == WP_ROLE_NONE || !screen)
-        return;
+        return true; // nothing to apply; don't reopen the picker
 
     const NodeNum me = nodeDB->getNodeNum();
 
@@ -373,8 +432,7 @@ void WolfpackModule::applyTeamSelection(WolfpackColor color, WolfpackRole role)
         char msg[40];
         snprintf(msg, sizeof(msg), "%s already has a Lead", wp_colorName(color));
         screen->showSimpleBanner(msg, 4000);
-        showColorPicker();
-        return;
+        return false; // tell runOnce() to reopen the color picker
     }
 
     // Short-name = color char + role char + (Mid/Sweep) sequential collision suffix.
@@ -402,6 +460,7 @@ void WolfpackModule::applyTeamSelection(WolfpackColor color, WolfpackRole role)
     LOG_INFO("Wolfpack: team set to %s (%s %s)", code, wp_colorName(color), wp_roleName(role));
 
     setIntervalFromNow(0); // beacon the new identity right away
+    return true;
 }
 
 bool WolfpackModule::teamHasLeader(WolfpackColor color, NodeNum exclude) const
