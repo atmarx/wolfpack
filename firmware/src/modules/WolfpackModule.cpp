@@ -24,8 +24,10 @@ static constexpr int32_t WP_PICK_TICK_MS = 250;
 WolfpackModule::WolfpackModule()
     : SinglePortModule("wolfpack", meshtastic_PortNum_PRIVATE_APP), concurrency::OSThread("Wolfpack")
 {
-    // Stagger the first broadcast like the other periodic modules do.
-    setIntervalFromNow(setStartDelay());
+    // Come alive quickly: the input observer attaches and the picker auto-launches
+    // from the first runOnce, and setStartDelay() can be ~15s with all the stock
+    // periodic modules registered ahead of us — far too long to wait for a click.
+    setIntervalFromNow(1500);
 }
 
 int32_t WolfpackModule::runOnce()
@@ -66,19 +68,23 @@ int32_t WolfpackModule::runOnce()
         switch (pickStep) {
         case WP_PICK_WANT_COLOR:
             if (!overlayUp) {
+                LOG_INFO("Wolfpack: pick -> open color picker");
                 showColorPicker();
                 pickStep = WP_PICK_WAIT_COLOR;
             }
             break;
         case WP_PICK_WANT_POSITION:
             if (!overlayUp) {
+                LOG_INFO("Wolfpack: pick -> open position picker (color=%d)", (int)pendingColor);
                 showPositionPicker();
                 pickStep = WP_PICK_WAIT_POSITION;
             }
             break;
         case WP_PICK_WANT_APPLY:
-            if (!overlayUp)
+            if (!overlayUp) {
+                LOG_INFO("Wolfpack: pick -> apply (color=%d role=%d)", (int)pendingColor, (int)pendingRole);
                 pickStep = applyTeamSelection(pendingColor, pendingRole) ? WP_PICK_IDLE : WP_PICK_WANT_COLOR;
+            }
             break;
         case WP_PICK_WAIT_COLOR:
         case WP_PICK_WAIT_POSITION:
@@ -95,6 +101,12 @@ int32_t WolfpackModule::runOnce()
         // of THIS call. Also keeps the flow responsive between banners.
         return WP_PICK_TICK_MS;
     }
+
+    // Warming up: if inputBroker or screen weren't ready at the first (1.5s) tick,
+    // retry soon so the observer attaches and the picker auto-launches without a
+    // full beacon-interval stall.
+    if (!inputObserved || (!autoPickerShown && (color == WP_COLOR_NONE || role == WP_ROLE_NONE)))
+        return 1000;
 #endif
 
     if (color == WP_COLOR_NONE || role == WP_ROLE_NONE) {
@@ -360,6 +372,7 @@ void WolfpackModule::launchTeamPicker()
     // Don't open a banner straight from here — we may be inside a banner callback
     // or handleReceived(). Just arm the state machine; runOnce() opens the color
     // picker on the next tick, once any current overlay has cleared.
+    LOG_INFO("Wolfpack: launchTeamPicker (was step=%d)", (int)pickStep);
     pickStep = WP_PICK_WANT_COLOR;
     setIntervalFromNow(0);
 }
@@ -382,6 +395,7 @@ void WolfpackModule::showColorPicker()
     o.durationMs = 30000;
     o.InitialSelected = (cur != WP_COLOR_NONE) ? (int8_t)(cur - WP_RED) : 0;
     o.bannerCallback = [this](int idx) {
+        LOG_INFO("Wolfpack: color callback idx=%d", idx);
         if (idx < 0 || idx >= (int)WP_NUM_COLORS) { // Cancel / dismissed
             this->pickStep = WP_PICK_IDLE;
             return;
@@ -407,6 +421,7 @@ void WolfpackModule::showPositionPicker()
     o.durationMs = 30000;
     o.InitialSelected = 0;
     o.bannerCallback = [this](int idx) {
+        LOG_INFO("Wolfpack: position callback idx=%d", idx);
         if (idx < 0 || idx >= (int)WP_NUM_ROLES) { // Cancel / dismissed
             this->pickStep = WP_PICK_IDLE;
             return;
@@ -484,16 +499,23 @@ uint8_t WolfpackModule::countTeamRole(WolfpackColor color, WolfpackRole role, No
 
 int WolfpackModule::handleInputEvent(const InputEvent *event)
 {
-    // Only a click, and only while our HUD frame is the one on screen (it drew
-    // very recently). Otherwise pass through so we don't hijack carousel nav.
     if (!event || event->inputEvent != INPUT_BROKER_SELECT)
         return 0;
-    // A banner/picker is already up — that SELECT belongs to it, not us. (This is
-    // what caused the color picker to "reprompt" on every selection.)
+    // A pick flow is already running: the banner owns all input until it resolves.
+    // Never relaunch from a click here — that clobbers pickStep back to the color
+    // step and makes the picker "reprompt" (the real cause of the cycle).
+    if (pickStep != WP_PICK_IDLE) {
+        LOG_INFO("Wolfpack: SELECT ignored, pick in progress (step=%d)", (int)pickStep);
+        return 0;
+    }
+    // A banner/picker is already up — that SELECT belongs to it, not us.
     if (graphics::NotificationRenderer::isOverlayBannerShowing())
         return 0;
+    // Only fire when our HUD frame is the one on screen (it drew very recently),
+    // so we don't hijack carousel navigation on other frames.
     if (millis() - lastFrameDrawMs > 1500)
         return 0;
+    LOG_INFO("Wolfpack: HUD SELECT -> launch picker");
     launchTeamPicker();
     return 1; // consumed
 }
