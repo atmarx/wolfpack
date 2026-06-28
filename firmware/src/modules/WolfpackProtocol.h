@@ -7,6 +7,7 @@
 // stack. Only freestanding C headers are allowed here. Keep it that way.
 //
 #include <ctype.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -111,4 +112,76 @@ inline void wp_parseColorRole(const char *shortName, WolfpackColor &color, Wolfp
 inline bool wp_isSameTeam(WolfpackColor a, WolfpackColor b)
 {
     return a != WP_COLOR_NONE && b != WP_COLOR_NONE && a == b;
+}
+
+// ----------------------------------------------------------------------------
+// Geo math for the screen frame (slice 3). Kept pure and host-tested so the
+// distance/bearing the rider sees is exactly what the unit tests pin down — and
+// so it links identically on-device and on the native runner (no firmware
+// GeoCoord dependency dragged into the test build).
+// ----------------------------------------------------------------------------
+
+static const double WP_DEG2RAD = 0.017453292519943295; // pi / 180
+static const double WP_EARTH_R_M = 6371000.0;          // mean Earth radius, meters
+
+// Great-circle (haversine) distance in meters between two lat/lon points (deg).
+inline float wp_distanceMeters(double lat1, double lon1, double lat2, double lon2)
+{
+    const double rlat1 = lat1 * WP_DEG2RAD;
+    const double rlat2 = lat2 * WP_DEG2RAD;
+    const double dLat = (lat2 - lat1) * WP_DEG2RAD;
+    const double dLon = (lon2 - lon1) * WP_DEG2RAD;
+    const double s1 = sin(dLat * 0.5);
+    const double s2 = sin(dLon * 0.5);
+    const double a = s1 * s1 + cos(rlat1) * cos(rlat2) * s2 * s2;
+    const double c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+    return (float)(WP_EARTH_R_M * c);
+}
+
+// Initial great-circle bearing in degrees [0,360) from point 1 to point 2.
+// 0 = due north, 90 = east, 180 = south, 270 = west.
+inline float wp_bearingDegrees(double lat1, double lon1, double lat2, double lon2)
+{
+    const double rlat1 = lat1 * WP_DEG2RAD;
+    const double rlat2 = lat2 * WP_DEG2RAD;
+    const double dLon = (lon2 - lon1) * WP_DEG2RAD;
+    const double y = sin(dLon) * cos(rlat2);
+    const double x = cos(rlat1) * sin(rlat2) - sin(rlat1) * cos(rlat2) * cos(dLon);
+    double deg = atan2(y, x) / WP_DEG2RAD;
+    if (deg < 0.0)
+        deg += 360.0;
+    if (deg >= 360.0)
+        deg -= 360.0;
+    return (float)deg;
+}
+
+// 8-point compass label for an absolute bearing in degrees. Used when the node
+// has no fresh heading (standstill, no magnetometer) — an honest "NE" beats a
+// lying relative arrow.
+inline const char *wp_cardinal8(float bearingDeg)
+{
+    static const char *const DIRS[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+    int idx = (int)((bearingDeg + 22.5f) / 45.0f);
+    return DIRS[idx & 7];
+}
+
+// Indices of the two smallest values in dists[0..n) -> out[0..ret). Ties resolve
+// to the lower index. Returns 0, 1, or 2. Pure, no allocation, NULL-safe at n=0.
+inline uint8_t wp_twoNearest(const float *dists, uint8_t n, uint8_t out[2])
+{
+    int best1 = -1, best2 = -1;
+    for (uint8_t i = 0; i < n; i++) {
+        if (best1 < 0 || dists[i] < dists[best1]) {
+            best2 = best1;
+            best1 = (int)i;
+        } else if (best2 < 0 || dists[i] < dists[best2]) {
+            best2 = (int)i;
+        }
+    }
+    uint8_t count = 0;
+    if (best1 >= 0)
+        out[count++] = (uint8_t)best1;
+    if (best2 >= 0)
+        out[count++] = (uint8_t)best2;
+    return count;
 }

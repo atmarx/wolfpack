@@ -128,6 +128,61 @@ void test_isSameTeam_truth_table()
     TEST_ASSERT_FALSE(wp_isSameTeam(WP_COLOR_NONE, WP_GREEN));
 }
 
+// --- geo math: distance / bearing / cardinal / two-nearest (slice 3) ---
+
+void test_distance_known()
+{
+    // One degree of latitude ~ 111.19 km anywhere.
+    TEST_ASSERT_FLOAT_WITHIN(300.0f, 111195.0f, wp_distanceMeters(0.0, 0.0, 1.0, 0.0));
+    // Identical points -> zero.
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, wp_distanceMeters(40.0, -75.0, 40.0, -75.0));
+    // A bike-scale hop: 0.001 deg of longitude at lat 40 ~ 85 m.
+    TEST_ASSERT_FLOAT_WITHIN(3.0f, 85.3f, wp_distanceMeters(40.0, -75.0, 40.0, -74.999));
+}
+
+void test_bearing_cardinals()
+{
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 0.0f, wp_bearingDegrees(0.0, 0.0, 1.0, 0.0));    // due north
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 90.0f, wp_bearingDegrees(0.0, 0.0, 0.0, 1.0));   // due east
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 180.0f, wp_bearingDegrees(0.0, 0.0, -1.0, 0.0)); // due south
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 270.0f, wp_bearingDegrees(0.0, 0.0, 0.0, -1.0)); // due west
+}
+
+void test_cardinal8()
+{
+    TEST_ASSERT_EQUAL_STRING("N", wp_cardinal8(0.0f));
+    TEST_ASSERT_EQUAL_STRING("N", wp_cardinal8(359.0f));
+    TEST_ASSERT_EQUAL_STRING("NE", wp_cardinal8(45.0f));
+    TEST_ASSERT_EQUAL_STRING("E", wp_cardinal8(90.0f));
+    TEST_ASSERT_EQUAL_STRING("SE", wp_cardinal8(135.0f));
+    TEST_ASSERT_EQUAL_STRING("S", wp_cardinal8(180.0f));
+    TEST_ASSERT_EQUAL_STRING("SW", wp_cardinal8(225.0f));
+    TEST_ASSERT_EQUAL_STRING("W", wp_cardinal8(270.0f));
+    TEST_ASSERT_EQUAL_STRING("NW", wp_cardinal8(315.0f));
+}
+
+void test_two_nearest()
+{
+    uint8_t out[2];
+
+    float d3[3] = {300.0f, 100.0f, 200.0f};
+    TEST_ASSERT_EQUAL_UINT8(2, wp_twoNearest(d3, 3, out));
+    TEST_ASSERT_EQUAL_UINT8(1, out[0]); // 100m is nearest
+    TEST_ASSERT_EQUAL_UINT8(2, out[1]); // 200m is next
+
+    float d1[1] = {42.0f};
+    TEST_ASSERT_EQUAL_UINT8(1, wp_twoNearest(d1, 1, out));
+    TEST_ASSERT_EQUAL_UINT8(0, out[0]);
+
+    // n == 0 must be safe even with a null array.
+    TEST_ASSERT_EQUAL_UINT8(0, wp_twoNearest(NULL, 0, out));
+
+    float d2[2] = {5.0f, 9.0f};
+    TEST_ASSERT_EQUAL_UINT8(2, wp_twoNearest(d2, 2, out));
+    TEST_ASSERT_EQUAL_UINT8(0, out[0]);
+    TEST_ASSERT_EQUAL_UINT8(1, out[1]);
+}
+
 void setup()
 {
     initializeTestEnvironment();
@@ -141,6 +196,10 @@ void setup()
     RUN_TEST(test_parse_case_insensitive);
     RUN_TEST(test_parse_garbage_partial_null);
     RUN_TEST(test_isSameTeam_truth_table);
+    RUN_TEST(test_distance_known);
+    RUN_TEST(test_bearing_cardinals);
+    RUN_TEST(test_cardinal8);
+    RUN_TEST(test_two_nearest);
     exit(UNITY_END());
 }
 

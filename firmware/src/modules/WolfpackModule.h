@@ -41,6 +41,15 @@ class WolfpackModule : public SinglePortModule, private concurrency::OSThread
     // Ingest a teammate's beacon into the peer table.
     ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
 
+#if HAS_SCREEN
+    // The Wolfpack HUD frame: always present on a Wolfpack node. Modules are
+    // constructed before Screen builds its frameset, so returning true here is
+    // enough to land us in the carousel — no regenerate dance needed.
+    virtual bool wantUIFrame() override { return true; }
+    // Two-up compass HUD: distance + bearing arrow to the two nearest teammates.
+    virtual void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y) override;
+#endif
+
   private:
     void upsertPeer(NodeNum num, uint8_t color, uint8_t role);
 

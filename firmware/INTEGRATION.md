@@ -1,4 +1,4 @@
-# Wolfpack — firmware integration (slice 2: color/role broadcast)
+# Wolfpack — firmware integration (slices 2–3: broadcast + two-up compass HUD)
 
 This `firmware/` subtree holds the **canonical, hand-written** Wolfpack module
 source. It is *not* a fork of the Meshtastic tree — it's the set of files you
@@ -14,10 +14,34 @@ target **`seeed_wio_tracker_L1`** (nRF52840, S140 v7).
 - Broadcasts a 4-byte beacon `{version, color, role, flags}` on **`PRIVATE_APP`
   (portnum 256)** once a minute.
 - Listens for the same beacon from other nodes and keeps a fixed 32-entry peer
-  table (`NodeNum`, color, role, `lastHeardMs`) for the upcoming screen frame.
+  table (`NodeNum`, color, role, `lastHeardMs`) the screen frame reads.
 
 All wire/parse logic is in `WolfpackProtocol.h`, which is dependency-free and
 unit-tested on the host.
+
+## What slice 3 adds (the two-up compass HUD)
+
+A `MeshModule` UI frame (`wantUIFrame()` + `drawFrame()`) that renders, side by
+side on the 128×64 OLED, the **two nearest same-team teammates** — each cell is
+short-name on top, a compass rose in the middle, distance below. Symmetric: every
+node shows the others on its team (no leader/follower asymmetry). >2 teammates →
+nearest two + a `+N` marker (no silent cap; future 4th-node paging is a follow-up).
+
+- **Positions** come from the standard Meshtastic `NodeDB` (every node already
+  shares Position natively); the Wolfpack peer table only decides *who is on my
+  team*. A teammate with no known position is skipped.
+- **Heading** has no magnetometer on the L1, so it comes from GPS course via
+  `CompassRenderer::getHeadingRadians()`. When that returns false (standstill /
+  no course), the cell draws `?` in the rose and falls back to an **absolute
+  cardinal + distance** ("NE 142m") — it never renders a relative arrow that
+  would lie about which way you face.
+- New pure, host-tested geo math lives in `WolfpackProtocol.h`:
+  `wp_distanceMeters` (haversine), `wp_bearingDegrees`, `wp_cardinal8`,
+  `wp_twoNearest`. Tested code == shipped code (no firmware `GeoCoord` dep).
+
+No new files and **no `Modules.cpp` change** beyond slice 2 — the frame is
+overrides on the existing `WolfpackModule`, and `wantUIFrame()` returning true is
+enough because modules are constructed before Screen builds its frameset.
 
 ## Files and destinations
 
@@ -66,7 +90,9 @@ pio test -e native -f test_wolfpack
 
 Covers: pack/unpack round-trip, short-buffer + bad-version + null rejection,
 `wp_parseColorRole` across the full R/Y/G/B x L/M/T grid plus garbage/partial/null,
-and the `wp_isSameTeam` truth table.
+the `wp_isSameTeam` truth table, and (slice 3) the geo math — `wp_distanceMeters`
+against a known 1°-latitude reference, `wp_bearingDegrees` on the four cardinals,
+`wp_cardinal8`, and `wp_twoNearest` selection. 13 cases total.
 
 > The `native` env compiles the full portduino firmware (`test_build_src = true`),
 > so it needs the standard Meshtastic native prerequisites installed system-wide
@@ -83,19 +109,22 @@ region (the S140 v7 SoftDevice + bootloader eat the rest of the 1 MB).
 | Build | Flash | RAM (static) |
 |---|---|---|
 | Stock 2.8.0 | 88.4% — 720472 B | 46.9% — 116596 B |
-| + Wolfpack slice 2 | **88.5% — 721368 B** | 46.9% — 116596 B |
+| + Wolfpack slice 2 | 88.5% — 721368 B | 46.9% — 116596 B |
+| + Wolfpack slice 3 | **88.8% — 723928 B** | 46.9% — 116596 B |
 
-Cost of this slice: **+896 bytes flash (+0.11 pts)**, static RAM unchanged (the
-32-entry peer table is heap-allocated inside the `new`'d module, not static).
-Roughly **~92 KB of flash headroom remains** — keep the screen-frame slice lean.
+Cost of slice 3 (the HUD): **+2560 bytes flash (+0.31 pts)** over slice 2, static
+RAM unchanged (the candidate arrays in `drawFrame` are stack-local). Roughly
+**~89 KB of flash headroom remains**. The build's own nRF52 guards confirm it:
+the image ends 73 KB clear of the warm/bootloader region.
 
 ## Notes / decisions
 
 - **PortNum:** uses `meshtastic_PortNum_PRIVATE_APP` (256) directly, so no
   protobuf regen is needed. If a stable distinct port is wanted later, pick an
   unused value in 258–511 and run `bin/regen-protos.sh` (note 257 = ATAK_FORWARDER).
-- **Heading/compass** is out of scope for slice 2; this board has no
-  magnetometer, so the screen-frame slice will rely on GPS-course heading via
-  `Screen::estimatedHeading()` (see the slice-1 recon).
+- **Heading/compass:** the L1 has no magnetometer, so slice 3 takes heading from
+  GPS course via `CompassRenderer::getHeadingRadians()` (which wraps
+  `Screen::estimatedHeading()`). No course → no arrow; we show `?` + an absolute
+  cardinal instead of faking a relative bearing.
 - `wp_parseColorRole` resolves color and role **independently** — e.g. `"XL"`
   yields (NONE, LEADER) and `"RX"` yields (RED, NONE).
