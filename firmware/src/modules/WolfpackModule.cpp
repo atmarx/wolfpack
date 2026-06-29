@@ -1,6 +1,7 @@
 #include "WolfpackModule.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "PowerStatus.h" // powerStatus global (battery telemetry probe)
 #include "configuration.h"
 #include "main.h"
 
@@ -32,16 +33,6 @@ WolfpackModule::WolfpackModule()
 
 int32_t WolfpackModule::runOnce()
 {
-    // Workaround for an upstream L1 battery regression: ec5d230 ships the variant
-    // with ADC_MULTIPLIER 2.0, which reads ~21% low on this board (3.93V cell ->
-    // 3.10V shown). Set the runtime override once; it's re-read live (~5s) so it
-    // applies without a reboot, persists, and we leave any user-set value alone.
-    if (config.power.adc_multiplier_override <= 0.0f) {
-        config.power.adc_multiplier_override = 2.54f;
-        nodeDB->saveToDisk(SEGMENT_CONFIG);
-        LOG_INFO("Wolfpack: set L1 adc_multiplier_override=2.54 (stock reads low)");
-    }
-
     WolfpackColor color;
     WolfpackRole role;
     wp_parseColorRole(owner.short_name, color, role);
@@ -68,23 +59,19 @@ int32_t WolfpackModule::runOnce()
         switch (pickStep) {
         case WP_PICK_WANT_COLOR:
             if (!overlayUp) {
-                LOG_INFO("Wolfpack: pick -> open color picker");
                 showColorPicker();
                 pickStep = WP_PICK_WAIT_COLOR;
             }
             break;
         case WP_PICK_WANT_POSITION:
             if (!overlayUp) {
-                LOG_INFO("Wolfpack: pick -> open position picker (color=%d)", (int)pendingColor);
                 showPositionPicker();
                 pickStep = WP_PICK_WAIT_POSITION;
             }
             break;
         case WP_PICK_WANT_APPLY:
-            if (!overlayUp) {
-                LOG_INFO("Wolfpack: pick -> apply (color=%d role=%d)", (int)pendingColor, (int)pendingRole);
+            if (!overlayUp)
                 pickStep = applyTeamSelection(pendingColor, pendingRole) ? WP_PICK_IDLE : WP_PICK_WANT_COLOR;
-            }
             break;
         case WP_PICK_WAIT_COLOR:
         case WP_PICK_WAIT_POSITION:
@@ -108,6 +95,16 @@ int32_t WolfpackModule::runOnce()
     if (!inputObserved || (!autoPickerShown && (color == WP_COLOR_NONE || role == WP_ROLE_NONE)))
         return 1000;
 #endif
+
+    // Battery telemetry probe (temporary). The L1 reads its cell through an I2C
+    // fuel gauge, not the ADC (adc_multiplier_override is a no-op here), so this
+    // reports the values the firmware actually acts on — to pin down the
+    // 0%/USB-with-nothing-plugged-in symptom. Once per normal tick, INFO level.
+    if (powerStatus)
+        LOG_INFO("Wolfpack batt: hasBattery=%d hasUSB=%d charging=%d mV=%d pct=%d",
+                 (int)powerStatus->getHasBattery(), (int)powerStatus->getHasUSB(),
+                 (int)powerStatus->getIsCharging(), powerStatus->getBatteryVoltageMv(),
+                 (int)powerStatus->getBatteryChargePercent());
 
     if (color == WP_COLOR_NONE || role == WP_ROLE_NONE) {
         LOG_INFO("Wolfpack: short_name '%s' has no color/role, skip beacon", owner.short_name);
@@ -372,7 +369,6 @@ void WolfpackModule::launchTeamPicker()
     // Don't open a banner straight from here — we may be inside a banner callback
     // or handleReceived(). Just arm the state machine; runOnce() opens the color
     // picker on the next tick, once any current overlay has cleared.
-    LOG_INFO("Wolfpack: launchTeamPicker (was step=%d)", (int)pickStep);
     pickStep = WP_PICK_WANT_COLOR;
     setIntervalFromNow(0);
 }
@@ -395,7 +391,6 @@ void WolfpackModule::showColorPicker()
     o.durationMs = 30000;
     o.InitialSelected = (cur != WP_COLOR_NONE) ? (int8_t)(cur - WP_RED) : 0;
     o.bannerCallback = [this](int idx) {
-        LOG_INFO("Wolfpack: color callback idx=%d", idx);
         if (idx < 0 || idx >= (int)WP_NUM_COLORS) { // Cancel / dismissed
             this->pickStep = WP_PICK_IDLE;
             return;
@@ -421,7 +416,6 @@ void WolfpackModule::showPositionPicker()
     o.durationMs = 30000;
     o.InitialSelected = 0;
     o.bannerCallback = [this](int idx) {
-        LOG_INFO("Wolfpack: position callback idx=%d", idx);
         if (idx < 0 || idx >= (int)WP_NUM_ROLES) { // Cancel / dismissed
             this->pickStep = WP_PICK_IDLE;
             return;
@@ -504,10 +498,8 @@ int WolfpackModule::handleInputEvent(const InputEvent *event)
     // A pick flow is already running: the banner owns all input until it resolves.
     // Never relaunch from a click here — that clobbers pickStep back to the color
     // step and makes the picker "reprompt" (the real cause of the cycle).
-    if (pickStep != WP_PICK_IDLE) {
-        LOG_INFO("Wolfpack: SELECT ignored, pick in progress (step=%d)", (int)pickStep);
+    if (pickStep != WP_PICK_IDLE)
         return 0;
-    }
     // A banner/picker is already up — that SELECT belongs to it, not us.
     if (graphics::NotificationRenderer::isOverlayBannerShowing())
         return 0;
@@ -515,7 +507,6 @@ int WolfpackModule::handleInputEvent(const InputEvent *event)
     // so we don't hijack carousel navigation on other frames.
     if (millis() - lastFrameDrawMs > 1500)
         return 0;
-    LOG_INFO("Wolfpack: HUD SELECT -> launch picker");
     launchTeamPicker();
     return 1; // consumed
 }

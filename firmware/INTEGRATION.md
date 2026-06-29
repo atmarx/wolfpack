@@ -76,40 +76,33 @@ on `!isOverlayBannerShowing()`, ticking at 250 ms while a pick is in flight.
 Still only the slice-2 `Modules.cpp` registration — everything else is contained
 in `WolfpackModule` + the pure helpers in `WolfpackProtocol.h`.
 
-## L1 battery calibration (upstream regression — important)
+## L1 battery: it's an I2C fuel gauge, not the ADC (corrected 2026-06-29)
 
-Stock ec5d230 ships the `seeed_wio_tracker_L1` variant with `ADC_MULTIPLIER 2.0`,
-which **reads the battery ~21% low** on our boards (measured 3.93 V at the cell,
-firmware reported 3.10 V). Older Meshtastic firmware read it correctly, so this is
-an upstream calibration regression for the L1. The board's true divider is ~**2.54**
-(`2.0 × 3.93 / 3.10`).
+Earlier builds set `config.power.adc_multiplier_override = 2.54` on boot, on the
+theory that the L1's stock `ADC_MULTIPLIER 2.0` read the cell ~21% low (measured
+3.93 V, firmware showed 3.10 V). **That theory was wrong, and the override has been
+removed.**
 
-Slice 4 fixes this automatically: `WolfpackModule::runOnce()` sets
-`config.power.adc_multiplier_override = 2.54` on boot **if unset** (the multiplier
-is re-read live every ~5s, so it applies without a reboot and persists). A value
-you set yourself is respected:
+A field test settled it: setting the override to 0, 1.0, *and* 2.54 all displayed
+the same 3.10 V — the multiplier does nothing on this board. `Power::setup()` chooses
+a battery provider by priority (`Power.cpp` ~786: AXP → CW2015 → MAX17048 →
+lipoCharger → serial → meshSolar → **analog last**); the L1 carries an I2C **fuel
+gauge** that wins, so the analog / `adc_multiplier_override` path is never reached.
 
-```bash
-meshtastic --set power.adc_multiplier_override 2.54
-```
+That reframes the real symptom (**0% + a USB icon with nothing plugged in**): the
+gauge path has its own `isBatteryConnect()` = `isBatteryConnected()` and `isVbusIn()`
+= `isExternallyPowered()` (`Power.cpp` ~1538/1543). The gauge is reporting
+*battery-not-connected* (→ percent hard-codes to 0, `PowerStatus.h`) and
+*externally-powered* (→ USB glyph), and reads 3.10 V against a 3.93 V multimeter — an
+~0.8 V error a healthy fuel gauge shouldn't have, pointing at a gauge that isn't
+initializing/configured correctly on this variant.
 
-Worth reporting upstream — the L1 divider is ~2.54, not 2.0.
-
-> ⚠️ **Open issue (under investigation, 2026-06-28):** after the override, field
-> units show **0% + a USB icon with nothing plugged in**. Root mechanism is now
-> understood from source: on the L1 there is *no real USB detection* —
-> `AnalogBatteryLevel::isVbusIn()` is simply `getBattVoltage() > ~4200 mV`
-> (full-battery + 10 mV; `Power.cpp` ~562, `OCV[0]=4190`, `NUM_CELLS=1`). Any
-> reading that crosses 4.2 V is inferred as "charger pumping in" → the cell is
-> treated as absent → percent hard-codes to 0 (`PowerStatus.h`). So the symptom
-> means the firmware is reading the battery **too high**. The read path is linear
-> in the multiplier (`Power.cpp` ~465), so 2.54 *should* land ~3.94 V (under 4.2),
-> which doesn't fit — implicating either a still-wrong multiplier or the **wrong
-> ADC pin** (`BATTERY_PIN = PIN_VBAT` = P0.31, vs the `BAT_READ` = P0.04 divider
-> the `variant.h` comment describes). **Do not treat 2.54 as final** until a device
-> `batMv` reading (the `Battery:` line at `Power.cpp` ~976, `--debug`) confirms what
-> it actually reads. This may be our own override misfiring, not strictly a 2.8
-> regression — confirm before reporting upstream.
+`WolfpackModule::runOnce()` now logs the live values at INFO level
+(`Wolfpack batt: hasBattery=.. hasUSB=.. charging=.. mV=.. pct=..`) to characterize
+it without depending on boot-time DEBUG logs. **Open: confirm which gauge (MAX17048
+vs CW2015) and whether it just needs a quickstart/reset — then it's a legitimate
+upstream report.** We never filed the ADC-multiplier "regression"; it has zero effect
+here and would have been noise.
 
 ## Files and destinations
 
