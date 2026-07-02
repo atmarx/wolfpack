@@ -20,23 +20,50 @@ static const uint8_t WP_NUM_COLORS = 6;
 enum WolfpackRole : uint8_t { WP_ROLE_NONE = 0, WP_LEADER, WP_MIDDLE, WP_SWEEP };
 static const uint8_t WP_NUM_ROLES = 3;
 
-// On-wire beacon. Fixed 4 bytes, no padding assumptions — we pack/unpack by hand.
-// Version 2 = slice-4 palette (6 colors). A v1 (slice-3) beacon is rejected rather
-// than mis-parsed, since the color enum was renumbered into rainbow order.
-static const uint8_t WP_BEACON_VERSION = 2;
-static const size_t WP_BEACON_SIZE = 4;
+// On-wire beacon, packed by hand (no padding assumptions), little-endian ints.
+//
+// Version 3 (slice 5) carries the sender's position INSIDE the beacon. Why:
+// Meshtastic truncates POSITION_APP packets to the channel's position_precision
+// (default 13 bits = ~5.8 km cells, PositionPrecision.cpp) and rate-limits smart
+// position broadcasts to one per 5 minutes — useless for a moving pack. Private
+// application payloads like this one are never truncated, so the beacon is the
+// position channel now. NodeDB positions remain only a fallback for v2 peers.
+//
+// A v2 (4-byte, slice-4) beacon is still accepted as color/role-only. v1 is
+// rejected (the color enum was renumbered into rainbow order for v2).
+static const uint8_t WP_BEACON_VERSION = 3;
+static const uint8_t WP_BEACON_VERSION_V2 = 2;
+static const size_t WP_BEACON_SIZE = 12;
+static const size_t WP_BEACON_SIZE_V2 = 4;
 
-// flags bitfield (reserved). bit0 = is_leader, held at 0 for this slice.
-static const uint8_t WP_FLAG_IS_LEADER = 0x01;
+// flags bitfield. bit0 = lat_i/lon_i carry a real fix.
+static const uint8_t WP_FLAG_HAS_POSITION = 0x01;
 
 struct WolfpackBeacon {
     uint8_t version;
-    uint8_t color; // WolfpackColor
-    uint8_t role;  // WolfpackRole
-    uint8_t flags; // reserved (WP_FLAG_*)
+    uint8_t color;  // WolfpackColor
+    uint8_t role;   // WolfpackRole
+    uint8_t flags;  // WP_FLAG_*
+    int32_t lat_i;  // latitude  * 1e7 (Meshtastic native fixed-point), valid iff HAS_POSITION
+    int32_t lon_i;  // longitude * 1e7, valid iff HAS_POSITION
 };
 
-// Serialize a beacon into buf. Returns bytes written (WP_BEACON_SIZE) or 0 if
+static inline void wp_writeI32LE(uint8_t *p, int32_t v)
+{
+    const uint32_t u = (uint32_t)v; // defined behavior for negative values
+    p[0] = (uint8_t)(u & 0xFF);
+    p[1] = (uint8_t)((u >> 8) & 0xFF);
+    p[2] = (uint8_t)((u >> 16) & 0xFF);
+    p[3] = (uint8_t)((u >> 24) & 0xFF);
+}
+
+static inline int32_t wp_readI32LE(const uint8_t *p)
+{
+    const uint32_t u = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    return (int32_t)u;
+}
+
+// Serialize a v3 beacon into buf. Returns bytes written (WP_BEACON_SIZE) or 0 if
 // buf is null or too small. No allocation.
 inline size_t wp_packBeacon(const WolfpackBeacon &b, uint8_t *buf, size_t buflen)
 {
@@ -46,22 +73,42 @@ inline size_t wp_packBeacon(const WolfpackBeacon &b, uint8_t *buf, size_t buflen
     buf[1] = b.color;
     buf[2] = b.role;
     buf[3] = b.flags;
+    wp_writeI32LE(buf + 4, b.lat_i);
+    wp_writeI32LE(buf + 8, b.lon_i);
     return WP_BEACON_SIZE;
 }
 
-// Deserialize a beacon. Returns false (leaving out untouched) if the buffer is
-// null, shorter than WP_BEACON_SIZE, or carries a version we don't speak.
+// Deserialize a beacon. Accepts v3 (12 bytes) and legacy v2 (4 bytes, parsed as
+// color/role with no position — flags are zeroed since v2's bit0 meant something
+// else). Returns false (leaving out untouched) on null buffer, short buffer, or
+// a version we don't speak.
 inline bool wp_unpackBeacon(const uint8_t *buf, size_t len, WolfpackBeacon &out)
 {
-    if (buf == NULL || len < WP_BEACON_SIZE)
+    if (buf == NULL)
         return false;
-    if (buf[0] != WP_BEACON_VERSION)
-        return false;
-    out.version = buf[0];
-    out.color = buf[1];
-    out.role = buf[2];
-    out.flags = buf[3];
-    return true;
+    if (len >= WP_BEACON_SIZE && buf[0] == WP_BEACON_VERSION) {
+        out.version = buf[0];
+        out.color = buf[1];
+        out.role = buf[2];
+        out.flags = buf[3];
+        out.lat_i = wp_readI32LE(buf + 4);
+        out.lon_i = wp_readI32LE(buf + 8);
+        if (!(out.flags & WP_FLAG_HAS_POSITION)) {
+            out.lat_i = 0;
+            out.lon_i = 0;
+        }
+        return true;
+    }
+    if (len >= WP_BEACON_SIZE_V2 && buf[0] == WP_BEACON_VERSION_V2) {
+        out.version = buf[0];
+        out.color = buf[1];
+        out.role = buf[2];
+        out.flags = 0; // v2 flag bits are not ours; no position on the wire
+        out.lat_i = 0;
+        out.lon_i = 0;
+        return true;
+    }
+    return false;
 }
 
 // Derive (color, role) from a node short_name. char0 -> color (R/Y/G/B),

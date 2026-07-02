@@ -16,15 +16,16 @@ void tearDown(void) {}
 
 void test_pack_unpack_roundtrip()
 {
-    WolfpackBeacon in = {WP_BEACON_VERSION, WP_GREEN, WP_LEADER, 0};
-    uint8_t buf[8] = {0};
+    // Philadelphia-ish fix: positive lat, NEGATIVE lon — signs must survive.
+    WolfpackBeacon in = {WP_BEACON_VERSION, WP_GREEN, WP_LEADER, WP_FLAG_HAS_POSITION, 399500000, -751600000};
+    uint8_t buf[16] = {0};
 
     size_t n = wp_packBeacon(in, buf, sizeof(buf));
     TEST_ASSERT_EQUAL_size_t(WP_BEACON_SIZE, n);
     TEST_ASSERT_EQUAL_HEX8(WP_BEACON_VERSION, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(WP_GREEN, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(WP_LEADER, buf[2]);
-    TEST_ASSERT_EQUAL_HEX8(0, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(WP_FLAG_HAS_POSITION, buf[3]);
 
     WolfpackBeacon out;
     TEST_ASSERT_TRUE(wp_unpackBeacon(buf, n, out));
@@ -32,31 +33,67 @@ void test_pack_unpack_roundtrip()
     TEST_ASSERT_EQUAL_UINT8(in.color, out.color);
     TEST_ASSERT_EQUAL_UINT8(in.role, out.role);
     TEST_ASSERT_EQUAL_UINT8(in.flags, out.flags);
+    TEST_ASSERT_EQUAL_INT32(in.lat_i, out.lat_i);
+    TEST_ASSERT_EQUAL_INT32(in.lon_i, out.lon_i);
+}
+
+void test_unpack_zeroes_position_without_flag()
+{
+    // flags=0 but junk where lat/lon live: the parser must not surface it.
+    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_MIDDLE, 0, 123456789, -987654321};
+    uint8_t buf[16] = {0};
+    size_t n = wp_packBeacon(in, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_size_t(WP_BEACON_SIZE, n);
+
+    WolfpackBeacon out;
+    TEST_ASSERT_TRUE(wp_unpackBeacon(buf, n, out));
+    TEST_ASSERT_EQUAL_UINT8(0, out.flags);
+    TEST_ASSERT_EQUAL_INT32(0, out.lat_i);
+    TEST_ASSERT_EQUAL_INT32(0, out.lon_i);
+}
+
+void test_unpack_accepts_legacy_v2()
+{
+    // A slice-4 radio still on v2 sends 4 bytes: color/role must land, position
+    // must not be invented, and v2's foreign flag bits must be dropped.
+    uint8_t v2[4] = {WP_BEACON_VERSION_V2, WP_BLUE, WP_SWEEP, 0x01};
+    WolfpackBeacon out;
+    TEST_ASSERT_TRUE(wp_unpackBeacon(v2, sizeof(v2), out));
+    TEST_ASSERT_EQUAL_UINT8(WP_BEACON_VERSION_V2, out.version);
+    TEST_ASSERT_EQUAL_UINT8(WP_BLUE, out.color);
+    TEST_ASSERT_EQUAL_UINT8(WP_SWEEP, out.role);
+    TEST_ASSERT_EQUAL_UINT8(0, out.flags); // no HAS_POSITION from a v2 peer
+    TEST_ASSERT_EQUAL_INT32(0, out.lat_i);
+    TEST_ASSERT_EQUAL_INT32(0, out.lon_i);
 }
 
 void test_pack_rejects_short_buffer()
 {
-    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_SWEEP, 0};
-    uint8_t buf[3] = {0};
+    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_SWEEP, 0, 0, 0};
+    uint8_t buf[11] = {0}; // one byte short of a v3 beacon
     TEST_ASSERT_EQUAL_size_t(0, wp_packBeacon(in, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_size_t(0, wp_packBeacon(in, buf, 0));
 }
 
 void test_unpack_rejects_short_buffer()
 {
-    uint8_t buf[3] = {WP_BEACON_VERSION, WP_RED, WP_LEADER};
+    // 11 bytes claiming v3: too short for v3, wrong version for v2 -> reject.
+    uint8_t buf[11] = {WP_BEACON_VERSION, WP_RED, WP_LEADER, WP_FLAG_HAS_POSITION};
     WolfpackBeacon out;
     TEST_ASSERT_FALSE(wp_unpackBeacon(buf, sizeof(buf), out));
+    // 3 bytes claiming v2: also too short.
+    uint8_t v2short[3] = {WP_BEACON_VERSION_V2, WP_RED, WP_LEADER};
+    TEST_ASSERT_FALSE(wp_unpackBeacon(v2short, sizeof(v2short), out));
 }
 
 void test_unpack_rejects_bad_version()
 {
     WolfpackBeacon out;
-    uint8_t v1[4] = {1, WP_RED, WP_LEADER, 0}; // slice-3 beacon: now rejected
+    uint8_t v1[12] = {1, WP_RED, WP_LEADER, 0}; // slice-3 beacon: rejected (palette renumbered)
     TEST_ASSERT_FALSE(wp_unpackBeacon(v1, sizeof(v1), out));
-    uint8_t v3[4] = {3, WP_RED, WP_LEADER, 0};
-    TEST_ASSERT_FALSE(wp_unpackBeacon(v3, sizeof(v3), out));
-    uint8_t v0[4] = {0, WP_RED, WP_LEADER, 0};
+    uint8_t v4[12] = {4, WP_RED, WP_LEADER, 0}; // from the future: rejected
+    TEST_ASSERT_FALSE(wp_unpackBeacon(v4, sizeof(v4), out));
+    uint8_t v0[12] = {0, WP_RED, WP_LEADER, 0};
     TEST_ASSERT_FALSE(wp_unpackBeacon(v0, sizeof(v0), out));
 }
 
@@ -208,6 +245,8 @@ void setup()
     initializeTestEnvironment();
     UNITY_BEGIN();
     RUN_TEST(test_pack_unpack_roundtrip);
+    RUN_TEST(test_unpack_zeroes_position_without_flag);
+    RUN_TEST(test_unpack_accepts_legacy_v2);
     RUN_TEST(test_pack_rejects_short_buffer);
     RUN_TEST(test_unpack_rejects_short_buffer);
     RUN_TEST(test_unpack_rejects_bad_version);

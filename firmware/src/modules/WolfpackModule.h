@@ -15,12 +15,18 @@
 #endif
 
 // Snapshot of a teammate we've heard. Intentionally a fixed-size POD table — no
-// STL, no heap — so the screen frame (next slice) can iterate it cheaply.
+// STL, no heap — so the screen frame can iterate it cheaply.
 struct WolfpackPeer {
-    NodeNum num;         // node number of the sender (mp.from)
-    uint8_t color;       // WolfpackColor
-    uint8_t role;        // WolfpackRole
+    NodeNum num;          // node number of the sender (mp.from)
+    uint8_t color;        // WolfpackColor
+    uint8_t role;         // WolfpackRole
     uint32_t lastHeardMs; // millis() of last beacon
+    // Full-precision position carried in a v3 beacon (never channel-truncated,
+    // unlike NodeDB positions). posMs == 0 => never received one (v2 peer / no
+    // fix yet) and the HUD falls back to NodeDB.
+    int32_t lat_i;  // latitude  * 1e7
+    int32_t lon_i;  // longitude * 1e7
+    uint32_t posMs; // millis() when the beacon position was received
 };
 
 #define WP_MAX_PEERS 32
@@ -60,7 +66,14 @@ class WolfpackModule : public SinglePortModule, private concurrency::OSThread
 #endif
 
   private:
-    void upsertPeer(NodeNum num, uint8_t color, uint8_t role);
+    void upsertPeer(NodeNum num, const WolfpackBeacon &beacon);
+
+    // --- Slice 5: position-in-beacon cadence state ---
+    uint32_t lastBeaconMs = 0;  // millis() of the last beacon actually sent
+    int32_t lastSentLat = 0;    // position carried in that beacon...
+    int32_t lastSentLon = 0;
+    bool haveSentPos = false;   // ...and whether it carried one at all
+    uint32_t lastBattLogMs = 0; // throttle for the battery telemetry probe
 
 #if HAS_SCREEN
     // --- Slice 4: on-device team picker (color + position) ---

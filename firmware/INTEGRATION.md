@@ -1,4 +1,4 @@
-# Wolfpack — firmware integration (slices 2–4: broadcast + HUD + team picker)
+# Wolfpack — firmware integration (slices 2–5: broadcast + HUD + picker + position-in-beacon)
 
 This `firmware/` subtree holds the **canonical, hand-written** Wolfpack module
 source. It is *not* a fork of the Meshtastic tree — it's the set of files you
@@ -75,6 +75,37 @@ on `!isOverlayBannerShowing()`, ticking at 250 ms while a pick is in flight.
 
 Still only the slice-2 `Modules.cpp` registration — everything else is contained
 in `WolfpackModule` + the pure helpers in `WolfpackProtocol.h`.
+
+## What slice 5 adds (position rides in the beacon)
+
+Field testing exposed that HUD distances **never settled below ~1 km**. Root
+cause (full story in `MESHTASTIC-INTERNALS.md`): Meshtastic truncates every
+`POSITION_APP` packet to the channel's `position_precision` — **default 13 bits
+= ~5.8 km cells, center-snapped** (`Channels.cpp:156`,
+`PositionPrecision.cpp:31-43`) — and rate-limits movement-triggered position
+broadcasts to **one per 5 minutes** (`Default.h`). Your own GPS stays precise
+locally, so the HUD was computing (my exact spot) → (teammate's cell center):
+a stable km-scale error that open sky can never fix.
+
+Private-app payloads are exempt from truncation (`PositionPrecision.cpp:70-73`),
+so the **v3 beacon (12 bytes) now carries the sender's full-precision fix**:
+
+```
+[0] version=3  [1] color  [2] role  [3] flags(bit0=has_position)
+[4..7] int32 latitude_i   [8..11] int32 longitude_i   (little-endian, 1e-7°)
+```
+
+- **Adaptive cadence**: 15 s tick; send when moved ≥25 m since the last *sent*
+  fix, with a 60 s heartbeat floor. Movement sends gate on the polite (25%)
+  airtime ceiling, heartbeats on the hard (40%) one — pressure sheds fidelity
+  first, never liveness. Beacons go out `hop_limit=1` (one relay tier; mid can
+  bridge lead↔sweep).
+- **HUD prefers beacon positions**; NodeDB is only the fallback for v2 peers.
+  Peers unknown to NodeDB get a synthesized name from the beacon (`RM`), so
+  cells are never nameless.
+- **v2 (4-byte) beacons are still accepted** as color/role-only; v1 rejected.
+- For rides with 3+ radios on LongFast, consider `--set lora.modem_preset
+  MEDIUM_FAST` — 4× the airtime headroom (see the internals doc for the table).
 
 ## L1 battery: it's an I2C fuel gauge, not the ADC (corrected 2026-06-29)
 
@@ -172,7 +203,8 @@ region (the S140 v7 SoftDevice + bootloader eat the rest of the 1 MB).
 | Stock 2.8.0 | 88.4% — 720472 B | 46.9% — 116596 B |
 | + Wolfpack slice 2 | 88.5% — 721368 B | 46.9% — 116596 B |
 | + Wolfpack slice 3 | 88.8% — 723928 B | 46.9% — 116596 B |
-| + Wolfpack slice 4 (+ picker fix) | **89.0% — 725640 B** | 46.9% — 116644 B |
+| + Wolfpack slice 4 (+ picker fix) | 89.0% — 725720 B | 46.9% — 116644 B |
+| + Wolfpack slice 5 (position-in-beacon) | **89.1% — 726368 B** | 46.9% — 116644 B |
 
 Cost of slice 4 (the picker): **+1472 bytes flash** over slice 3 (the banner
 overlay is stock — we only add options + callbacks), +48 bytes static RAM (the new

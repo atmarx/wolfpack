@@ -2,6 +2,7 @@
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "PowerStatus.h" // powerStatus global (battery telemetry probe)
+#include "airtime.h"     // airTime->isTxAllowedChannelUtil() send gates
 #include "configuration.h"
 #include "main.h"
 
@@ -15,12 +16,23 @@
 
 WolfpackModule *wolfpackModule;
 
-// One beacon per minute. Cheap, and slow enough not to perturb channel util.
-static constexpr int32_t WP_BROADCAST_INTERVAL_MS = 60 * 1000;
+// Beacon cadence (slice 5): tick fast, send adaptively. A heartbeat once per
+// WP_BEACON_IDLE_MS keeps peer liveness; moving >= WP_MOVE_RESEND_M since the
+// last *sent* fix re-sends early so followers track a moving pack (worst case
+// one tick behind). Sends are airtime-gated — see runOnce().
+static constexpr int32_t WP_TEAM_TICK_MS = 15 * 1000;
+static constexpr uint32_t WP_BEACON_IDLE_MS = 60 * 1000;
+static constexpr float WP_MOVE_RESEND_M = 25.0f;
 
 // While a pick flow is in progress, tick fast so each banner opens promptly once
 // the previous overlay clears (selection callbacks also wake us immediately).
 static constexpr int32_t WP_PICK_TICK_MS = 250;
+
+// Meshtastic fixed-point (1e-7 degree) -> degrees.
+static inline double wpDeg(int32_t i)
+{
+    return (double)i * 1e-7;
+}
 
 WolfpackModule::WolfpackModule()
     : SinglePortModule("wolfpack", meshtastic_PortNum_PRIVATE_APP), concurrency::OSThread("Wolfpack")
@@ -99,34 +111,85 @@ int32_t WolfpackModule::runOnce()
     // Battery telemetry probe (temporary). The L1 reads its cell through an I2C
     // fuel gauge, not the ADC (adc_multiplier_override is a no-op here), so this
     // reports the values the firmware actually acts on — to pin down the
-    // 0%/USB-with-nothing-plugged-in symptom. Once per normal tick, INFO level.
-    if (powerStatus)
+    // 0%/USB-with-nothing-plugged-in symptom. Throttled to ~1/min, INFO level.
+    if (powerStatus && (lastBattLogMs == 0 || millis() - lastBattLogMs >= 60000)) {
+        lastBattLogMs = millis();
         LOG_INFO("Wolfpack batt: hasBattery=%d hasUSB=%d charging=%d mV=%d pct=%d",
                  (int)powerStatus->getHasBattery(), (int)powerStatus->getHasUSB(),
                  (int)powerStatus->getIsCharging(), powerStatus->getBatteryVoltageMv(),
                  (int)powerStatus->getBatteryChargePercent());
+    }
 
     if (color == WP_COLOR_NONE || role == WP_ROLE_NONE) {
         LOG_INFO("Wolfpack: short_name '%s' has no color/role, skip beacon", owner.short_name);
-        return WP_BROADCAST_INTERVAL_MS;
+        return (int32_t)WP_BEACON_IDLE_MS;
     }
 
-    WolfpackBeacon beacon = {WP_BEACON_VERSION, (uint8_t)color, (uint8_t)role, 0};
+    // --- Slice 5: position rides IN the beacon ------------------------------
+    // Meshtastic truncates POSITION_APP packets to the channel position_precision
+    // (default 13 bits = ~5.8 km cells) and rate-limits smart broadcasts to one
+    // per 5 min — useless for a moving pack. PRIVATE_APP payloads are never
+    // truncated, so we carry our own fix: full precision, straight from NodeDB's
+    // self entry (updated locally by the GPS thread).
+    bool havePos = false;
+    int32_t latI = 0, lonI = 0;
+    const meshtastic_NodeInfoLite *me = nodeDB->getMeshNode(nodeDB->getNodeNum());
+    meshtastic_PositionLite myPos;
+    if (me && nodeDB->hasValidPosition(me) && nodeDB->copyNodePosition(me->num, myPos)) {
+        latI = myPos.latitude_i;
+        lonI = myPos.longitude_i;
+        havePos = true;
+    }
 
-    meshtastic_MeshPacket *p = allocDataPacket();
-    p->decoded.payload.size = wp_packBeacon(beacon, p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
-    LOG_INFO("Wolfpack: beacon color=%u role=%u", (unsigned)color, (unsigned)role);
-    service->sendToMesh(p);
+    const uint32_t now = millis();
+    // Heartbeat: at least one beacon per WP_BEACON_IDLE_MS for peer liveness,
+    // fix or no fix.
+    bool sendDue = (lastBeaconMs == 0) || (now - lastBeaconMs >= WP_BEACON_IDLE_MS);
+    // Movement: re-send early once we've moved WP_MOVE_RESEND_M from the last
+    // *sent* fix (or just got our first fix). This is extra fidelity, so it's
+    // gated on the POLITE (25%) airtime ceiling — under pressure we shed these
+    // first and keep heartbeats.
+    if (!sendDue && havePos) {
+        const bool moved = !haveSentPos || wp_distanceMeters(wpDeg(lastSentLat), wpDeg(lastSentLon), wpDeg(latI),
+                                                             wpDeg(lonI)) >= WP_MOVE_RESEND_M;
+        if (moved && airTime && airTime->isTxAllowedChannelUtil(true))
+            sendDue = true;
+    }
+    // Hard (40%) ceiling applies to everything; a skipped heartbeat retries next
+    // tick because lastBeaconMs doesn't advance.
+    if (sendDue && airTime && !airTime->isTxAllowedChannelUtil(false))
+        sendDue = false;
 
-    return WP_BROADCAST_INTERVAL_MS;
+    if (sendDue) {
+        WolfpackBeacon beacon = {WP_BEACON_VERSION, (uint8_t)color, (uint8_t)role,
+                                 (uint8_t)(havePos ? WP_FLAG_HAS_POSITION : 0), latI, lonI};
+        meshtastic_MeshPacket *p = allocDataPacket();
+        p->decoded.payload.size = wp_packBeacon(beacon, p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
+        // Pack semantics, not mesh semantics: one relay tier is plenty (mid can
+        // bridge lead<->sweep) and it cuts rebroadcast airtime vs the default 3.
+        p->hop_limit = 1;
+        LOG_INFO("Wolfpack: beacon color=%u role=%u pos=%d", (unsigned)color, (unsigned)role, (int)havePos);
+        service->sendToMesh(p);
+        lastBeaconMs = now;
+        if (havePos) {
+            lastSentLat = latI;
+            lastSentLon = lonI;
+            haveSentPos = true;
+        }
+    }
+
+    // Tick fast enough to notice movement promptly; the gates above decide
+    // whether anything actually hits the air.
+    return WP_TEAM_TICK_MS;
 }
 
 ProcessMessage WolfpackModule::handleReceived(const meshtastic_MeshPacket &mp)
 {
     WolfpackBeacon beacon;
     if (wp_unpackBeacon(mp.decoded.payload.bytes, mp.decoded.payload.size, beacon)) {
-        upsertPeer(mp.from, beacon.color, beacon.role);
-        LOG_DEBUG("Wolfpack: peer 0x%x color=%u role=%u", mp.from, beacon.color, beacon.role);
+        upsertPeer(mp.from, beacon);
+        LOG_DEBUG("Wolfpack: peer 0x%x color=%u role=%u pos=%d", mp.from, beacon.color, beacon.role,
+                  (int)((beacon.flags & WP_FLAG_HAS_POSITION) != 0));
 
 #if HAS_SCREEN
         // Lead-uniqueness backstop for the out-of-range case the picker can't
@@ -150,39 +213,45 @@ ProcessMessage WolfpackModule::handleReceived(const meshtastic_MeshPacket &mp)
     return ProcessMessage::CONTINUE;
 }
 
-void WolfpackModule::upsertPeer(NodeNum num, uint8_t color, uint8_t role)
+void WolfpackModule::upsertPeer(NodeNum num, const WolfpackBeacon &beacon)
 {
-    uint32_t now = millis();
+    const uint32_t now = millis();
+    const bool hasPos = (beacon.flags & WP_FLAG_HAS_POSITION) != 0;
+
+    WolfpackPeer *slot = nullptr;
 
     // Linear scan — the table is tiny (<= WP_MAX_PEERS) and walked rarely.
     for (uint8_t i = 0; i < peerCount; i++) {
         if (peers[i].num == num) {
-            peers[i].color = color;
-            peers[i].role = role;
-            peers[i].lastHeardMs = now;
-            return;
+            slot = &peers[i];
+            break;
         }
     }
 
-    if (peerCount < WP_MAX_PEERS) {
-        peers[peerCount].num = num;
-        peers[peerCount].color = color;
-        peers[peerCount].role = role;
-        peers[peerCount].lastHeardMs = now;
-        peerCount++;
-        return;
+    if (!slot && peerCount < WP_MAX_PEERS)
+        slot = &peers[peerCount++];
+
+    if (!slot) {
+        // Table full: evict the stalest entry so a fresh teammate still lands.
+        slot = &peers[0];
+        for (uint8_t i = 1; i < peerCount; i++) {
+            if (peers[i].lastHeardMs < slot->lastHeardMs)
+                slot = &peers[i];
+        }
+        slot->posMs = 0; // don't inherit the evicted node's position
     }
 
-    // Table full: evict the stalest entry so a fresh teammate still lands.
-    uint8_t oldest = 0;
-    for (uint8_t i = 1; i < peerCount; i++) {
-        if (peers[i].lastHeardMs < peers[oldest].lastHeardMs)
-            oldest = i;
+    slot->num = num;
+    slot->color = beacon.color;
+    slot->role = beacon.role;
+    slot->lastHeardMs = now;
+    if (hasPos) {
+        slot->lat_i = beacon.lat_i;
+        slot->lon_i = beacon.lon_i;
+        slot->posMs = now;
     }
-    peers[oldest].num = num;
-    peers[oldest].color = color;
-    peers[oldest].role = role;
-    peers[oldest].lastHeardMs = now;
+    // A beacon without a fix keeps the peer's previous position (if any) —
+    // last-known beats nothing, and posMs still says how old it is.
 }
 
 bool WolfpackModule::getPeer(NodeNum num, WolfpackPeer &out) const
@@ -307,20 +376,40 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
     float myHeadingRad = 0.0f;
     const bool haveHeading = graphics::CompassRenderer::getHeadingRadians(myLat, myLon, myHeadingRad);
 
-    // Gather same-team teammates that currently have a known position.
-    NodeNum cand[WP_MAX_PEERS];
+    // Gather same-team teammates that currently have a known position. Beacon
+    // positions (v3: full precision, seconds fresh) win; NodeDB is the fallback
+    // for v2 peers — but NodeDB positions are channel-truncated (default 13 bits
+    // = ~5.8 km cells) and minutes stale, so they're a last resort.
+    const WolfpackPeer *cand[WP_MAX_PEERS];
     float candDist[WP_MAX_PEERS];
+    int32_t candLatI[WP_MAX_PEERS];
+    int32_t candLonI[WP_MAX_PEERS];
     uint8_t nCand = 0;
     const NodeNum myNum = nodeDB->getNodeNum();
     for (const WolfpackPeer *p = peersBegin(); p != peersEnd(); ++p) {
         if (p->num == myNum || !wp_isSameTeam((WolfpackColor)p->color, myColor))
             continue;
-        const meshtastic_NodeInfoLite *pn = nodeDB->getMeshNode(p->num);
-        meshtastic_PositionLite pp;
-        if (!pn || !nodeDB->hasValidPosition(pn) || !nodeDB->copyNodePosition(p->num, pp))
+        int32_t plat = 0, plon = 0;
+        bool have = false;
+        if (p->posMs != 0) { // beacon-carried position (never truncated)
+            plat = p->lat_i;
+            plon = p->lon_i;
+            have = true;
+        } else { // v2 peer: NodeDB position or nothing
+            const meshtastic_NodeInfoLite *pn = nodeDB->getMeshNode(p->num);
+            meshtastic_PositionLite pp;
+            if (pn && nodeDB->hasValidPosition(pn) && nodeDB->copyNodePosition(p->num, pp)) {
+                plat = pp.latitude_i;
+                plon = pp.longitude_i;
+                have = true;
+            }
+        }
+        if (!have)
             continue;
-        candDist[nCand] = wp_distanceMeters(myLat, myLon, DegD(pp.latitude_i), DegD(pp.longitude_i));
-        cand[nCand] = p->num;
+        cand[nCand] = p;
+        candLatI[nCand] = plat;
+        candLonI[nCand] = plon;
+        candDist[nCand] = wp_distanceMeters(myLat, myLon, wpDeg(plat), wpDeg(plon));
         if (++nCand >= WP_MAX_PEERS)
             break;
     }
@@ -336,13 +425,14 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
     const int16_t colW = (int16_t)(w / 2);
 
     for (uint8_t c = 0; c < nShow; c++) {
-        const NodeNum num = cand[pick[c]];
-        const meshtastic_NodeInfoLite *pn = nodeDB->getMeshNode(num);
-        meshtastic_PositionLite pp;
-        nodeDB->copyNodePosition(num, pp); // re-fetch; validity already checked above
-        const char *nm = (pn && pn->short_name[0]) ? pn->short_name : "?";
-        wpDrawCell(display, (int16_t)(x + c * colW), colW, top, bottom, nm, myLat, myLon, DegD(pp.latitude_i),
-                   DegD(pp.longitude_i), candDist[pick[c]], haveHeading, myHeadingRad);
+        const WolfpackPeer *peer = cand[pick[c]];
+        const meshtastic_NodeInfoLite *pn = nodeDB->getMeshNode(peer->num);
+        // NodeDB may not know this node yet (beacons flow before NodeInfo does);
+        // synthesize the team code from the beacon so the cell is never nameless.
+        char synth[3] = {wp_colorChar((WolfpackColor)peer->color), wp_roleChar((WolfpackRole)peer->role), '\0'};
+        const char *nm = (pn && pn->short_name[0]) ? pn->short_name : synth;
+        wpDrawCell(display, (int16_t)(x + c * colW), colW, top, bottom, nm, myLat, myLon, wpDeg(candLatI[pick[c]]),
+                   wpDeg(candLonI[pick[c]]), candDist[pick[c]], haveHeading, myHeadingRad);
     }
 
     // Vertical divider between the two cells.
