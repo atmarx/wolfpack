@@ -95,11 +95,16 @@ so the **v3 beacon (12 bytes) now carries the sender's full-precision fix**:
 [4..7] int32 latitude_i   [8..11] int32 longitude_i   (little-endian, 1e-7°)
 ```
 
-- **Adaptive cadence**: 15 s tick; send when moved ≥25 m since the last *sent*
-  fix, with a 60 s heartbeat floor. Movement sends gate on the polite (25%)
-  airtime ceiling, heartbeats on the hard (40%) one — pressure sheds fidelity
-  first, never liveness. Beacons go out `hop_limit=1` (one relay tier; mid can
-  bridge lead↔sweep).
+- **Adaptive cadence**: 5 s tick; send when moved past the resend threshold
+  since the last *sent* fix, with a 60 s heartbeat floor. Movement sends gate on
+  the polite (25%) airtime ceiling, heartbeats on the hard (40%) one — pressure
+  sheds fidelity first, never liveness. Beacons go out `hop_limit=1` (one relay
+  tier; mid can bridge lead↔sweep).
+- **Resend threshold is runtime-tunable** (no reflash) via the native smart-
+  position distance knob: `meshtastic --set
+  position.broadcast_smart_minimum_distance 5` for walking tests, `25` (or the
+  factory `100`, treated as unset) for our riding default. See
+  `wpMoveThresholdMeters()`.
 - **HUD prefers beacon positions**; NodeDB is only the fallback for v2 peers.
   Peers unknown to NodeDB get a synthesized name from the beacon (`RM`), so
   cells are never nameless.

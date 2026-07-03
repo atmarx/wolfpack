@@ -101,9 +101,12 @@ the hard one.  On LongFast a 3-rider pack at 15 s cadence sits *at* the polite
 ceiling; 6 riders blow through it.
 
 **Wolfpack does three things about it:**
-1. Beacon cadence is adaptive: 15 s tick, but only *send* when moved ≥25 m
-   since the last sent fix, with a 60 s heartbeat floor.  Stationary pack ≈
-   1 beacon/min/node.
+1. Beacon cadence is adaptive: 5 s tick, but only *send* when moved past the
+   resend threshold since the last sent fix, with a 60 s heartbeat floor.
+   Stationary pack ≈ 1 beacon/min/node.  The threshold is **runtime-tunable**
+   via `position.broadcast_smart_minimum_distance` (our default 25 m; set ~5 m
+   for walking tests — near the GPS noise floor, so it jitters — 25 m+ for
+   riding).  No reflash to change it.
 2. Movement sends are gated on the polite util check; heartbeats on the hard
    one.  Overload sheds the *extra* fidelity first, never liveness.
 3. Beacons go out with `hop_limit = 1` — one relay tier (mid can bridge
@@ -129,6 +132,34 @@ firmware: `--set lora.modem_preset MEDIUM_FAST` on every radio.)
 - `Observable::notifyObservers` (`Observer.h:66`) **stops at the first observer
   returning non-zero**, in registration order.  Screen registers at boot;
   modules that attach later are last in line.  Returning 1 = consumed.
+
+## 3b. Heading without a magnetometer (why you must roll to get a bearing)
+
+The Wio Tracker L1 has **no magnetometer and no IMU** — nothing that senses which
+way the device points while still.  Meshtastic derives heading from **GPS
+course-over-ground** (`Screen::estimatedHeading()`, wrapped by
+`CompassRenderer::getHeadingRadians()`), which only exists when you're *moving*:
+course is computed from the vector between successive fixes.  Stand still and
+there is no course, so `getHeadingRadians()` returns false.
+
+What the HUD does with that (slice 3, deliberately honest):
+
+- **Moving** → real device-relative arrow ("teammate is 30° to your left").
+- **Stopped / no course** → `?` in the compass rose plus an **absolute** cardinal
+  and distance ("NE 142 m").  Distance is always correct; only the *relative*
+  arrow needs motion.  We never draw a relative arrow we can't justify — a
+  confident arrow pointing the wrong way is worse than an honest `?`.
+
+So the field rule is real: **roll a few meters before trusting the arrow.**  A
+stopped rider still gets range + an absolute compass bearing, but must know where
+north is to use it.
+
+Possible future softening (not built): cache the last valid heading for N seconds
+after stopping.  For a bar-mounted radio on a stopped-but-not-turned bike the
+cached course is still true, so a glance at a stop sign would keep the arrow.
+The catch is it lies the moment the bike (or a handheld) rotates — so it'd want
+a visual "stale" treatment (dashed/dimmed arrow) and a short timeout.  Flag for
+discussion; the honest `?` is correct until then.
 
 ## 4. Module scheduling
 

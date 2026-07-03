@@ -16,13 +16,15 @@
 
 WolfpackModule *wolfpackModule;
 
-// Beacon cadence (slice 5): tick fast, send adaptively. A heartbeat once per
-// WP_BEACON_IDLE_MS keeps peer liveness; moving >= WP_MOVE_RESEND_M since the
-// last *sent* fix re-sends early so followers track a moving pack (worst case
-// one tick behind). Sends are airtime-gated — see runOnce().
-static constexpr int32_t WP_TEAM_TICK_MS = 15 * 1000;
+// Beacon cadence (slice 5): evaluate every WP_TEAM_TICK_MS, send adaptively. A
+// heartbeat once per WP_BEACON_IDLE_MS keeps peer liveness even when parked;
+// moving past the resend threshold (wpMoveThresholdMeters) since the last *sent*
+// fix re-sends early so followers track a moving pack — worst case one tick
+// stale. Sends are airtime-gated (runOnce). The 5 s tick caps update freshness;
+// on a busy channel the gates back sends off well before that.
+static constexpr int32_t WP_TEAM_TICK_MS = 5 * 1000;
 static constexpr uint32_t WP_BEACON_IDLE_MS = 60 * 1000;
-static constexpr float WP_MOVE_RESEND_M = 25.0f;
+static constexpr float WP_MOVE_RESEND_DEFAULT_M = 25.0f;
 
 // While a pick flow is in progress, tick fast so each banner opens promptly once
 // the previous overlay clears (selection callbacks also wake us immediately).
@@ -32,6 +34,24 @@ static constexpr int32_t WP_PICK_TICK_MS = 250;
 static inline double wpDeg(int32_t i)
 {
     return (double)i * 1e-7;
+}
+
+// How far (m) we must move before re-sending our position. Runtime-tunable with
+// no reflash by reusing Meshtastic's own "smart position" distance knob:
+//   meshtastic --set position.broadcast_smart_minimum_distance 5    # walking test
+//   meshtastic --set position.broadcast_smart_minimum_distance 25   # riding (our default)
+// The Meshtastic factory value (100 m) and 0 mean "unset" -> our 25 m default:
+// above the ~3-5 m GPS noise floor, tight enough for a pack. ~5 m suits walking
+// tests but is near GPS resolution, so expect the odd jitter-triggered send while
+// standing still. Clamped to a sane ceiling.
+static float wpMoveThresholdMeters()
+{
+    uint32_t d = config.position.broadcast_smart_minimum_distance;
+    if (d == 0 || d == 100)
+        return WP_MOVE_RESEND_DEFAULT_M;
+    if (d > 500)
+        d = 500;
+    return (float)d;
 }
 
 WolfpackModule::WolfpackModule()
@@ -151,7 +171,7 @@ int32_t WolfpackModule::runOnce()
     // first and keep heartbeats.
     if (!sendDue && havePos) {
         const bool moved = !haveSentPos || wp_distanceMeters(wpDeg(lastSentLat), wpDeg(lastSentLon), wpDeg(latI),
-                                                             wpDeg(lonI)) >= WP_MOVE_RESEND_M;
+                                                             wpDeg(lonI)) >= wpMoveThresholdMeters();
         if (moved && airTime && airTime->isTxAllowedChannelUtil(true))
             sendDue = true;
     }

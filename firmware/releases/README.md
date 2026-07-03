@@ -22,8 +22,15 @@ build toolchain. Built from this repo's module source dropped into upstream
 Meshtastic truncates native position packets to the channel's
 `position_precision` — default **13 bits ≈ 5.8 km cells** — and rate-limits
 movement broadcasts to one per 5 minutes. Slice 5 sidesteps both: the Wolfpack
-beacon carries its own full-precision fix every ≤60 s (≈15 s while moving).
-No channel config needed. Full story: `../MESHTASTIC-INTERNALS.md`.
+beacon carries its own full-precision fix, re-sent whenever you move past the
+threshold (evaluated every 5 s) with a 60 s heartbeat floor. No channel config
+needed. Full story: `../MESHTASTIC-INTERNALS.md`.
+
+**Tuning the resend distance (no reflash):**
+```bash
+meshtastic --set position.broadcast_smart_minimum_distance 5    # walking tests (jittery, near GPS floor)
+meshtastic --set position.broadcast_smart_minimum_distance 25   # riding (also the default)
+```
 
 For rides with 3+ radios, `meshtastic --set lora.modem_preset MEDIUM_FAST` on
 every radio buys 4× the airtime headroom (optional but recommended).
