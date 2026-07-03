@@ -1,9 +1,11 @@
 # Meshtastic internals — the Wolfpack field guide
 
-Everything we learned the hard way about how Meshtastic 2.8.0 (`ec5d230`) actually
-works, written down so future-us doesn't re-derive it packet by packet.  Each
-section ends with what it means for Wolfpack.  File/line references are into the
-upstream tree at that sha.
+Everything we learned the hard way about how Meshtastic works, written down so
+future-us doesn't re-derive it packet by packet.  Each section ends with what it
+means for Wolfpack.  We ship on the **v2.7.26** stable tag (`54e0d8d`); every
+mechanism below is verified present there, but the specific `file:line` references
+were read on `develop` (`ec5d230`) and can drift a few lines against 2.7.26 —
+**trust the symbol names over the line numbers.**
 
 ---
 

@@ -154,10 +154,9 @@ int32_t WolfpackModule::runOnce()
     bool havePos = false;
     int32_t latI = 0, lonI = 0;
     const meshtastic_NodeInfoLite *me = nodeDB->getMeshNode(nodeDB->getNodeNum());
-    meshtastic_PositionLite myPos;
-    if (me && nodeDB->hasValidPosition(me) && nodeDB->copyNodePosition(me->num, myPos)) {
-        latI = myPos.latitude_i;
-        lonI = myPos.longitude_i;
+    if (me && nodeDB->hasValidPosition(me)) {
+        latI = me->position.latitude_i;
+        lonI = me->position.longitude_i;
         havePos = true;
     }
 
@@ -383,14 +382,13 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
 
     // Our own fix — needed before any distance/bearing means anything.
     const meshtastic_NodeInfoLite *me = nodeDB->getMeshNode(nodeDB->getNodeNum());
-    meshtastic_PositionLite myPos;
-    if (!me || !nodeDB->hasValidPosition(me) || !nodeDB->copyNodePosition(me->num, myPos)) {
+    if (!me || !nodeDB->hasValidPosition(me)) {
         display->drawString(x + w / 2, (int16_t)(top + 4), "Waiting for GPS fix");
         display->setTextAlignment(TEXT_ALIGN_LEFT);
         return;
     }
-    const double myLat = DegD(myPos.latitude_i);
-    const double myLon = DegD(myPos.longitude_i);
+    const double myLat = wpDeg(me->position.latitude_i);
+    const double myLon = wpDeg(me->position.longitude_i);
 
     // One heading lookup for both cells. false => not moving / no course yet.
     float myHeadingRad = 0.0f;
@@ -417,10 +415,9 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
             have = true;
         } else { // v2 peer: NodeDB position or nothing
             const meshtastic_NodeInfoLite *pn = nodeDB->getMeshNode(p->num);
-            meshtastic_PositionLite pp;
-            if (pn && nodeDB->hasValidPosition(pn) && nodeDB->copyNodePosition(p->num, pp)) {
-                plat = pp.latitude_i;
-                plon = pp.longitude_i;
+            if (pn && nodeDB->hasValidPosition(pn)) {
+                plat = pn->position.latitude_i;
+                plon = pn->position.longitude_i;
                 have = true;
             }
         }
@@ -450,7 +447,7 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
         // NodeDB may not know this node yet (beacons flow before NodeInfo does);
         // synthesize the team code from the beacon so the cell is never nameless.
         char synth[3] = {wp_colorChar((WolfpackColor)peer->color), wp_roleChar((WolfpackRole)peer->role), '\0'};
-        const char *nm = (pn && pn->short_name[0]) ? pn->short_name : synth;
+        const char *nm = (pn && pn->has_user && pn->user.short_name[0]) ? pn->user.short_name : synth;
         wpDrawCell(display, (int16_t)(x + c * colW), colW, top, bottom, nm, myLat, myLon, wpDeg(candLatI[pick[c]]),
                    wpDeg(candLonI[pick[c]]), candDist[pick[c]], haveHeading, myHeadingRad);
     }

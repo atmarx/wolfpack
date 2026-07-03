@@ -2,11 +2,12 @@
 
 Prebuilt UF2 images so you can flash without setting up the full Meshtastic
 build toolchain. Built from this repo's module source dropped into upstream
-**meshtastic/firmware `2.8.0` (`ec5d230`)**, target `seeed_wio_tracker_L1`.
+**meshtastic/firmware `v2.7.26` (`54e0d8d`)** — the current stable release tag —
+target `seeed_wio_tracker_L1`.
 
 | File | Slice | What you'll see |
 |---|---|---|
-| `wolfpack-slice5-seeed_wio_tracker_L1-2.8.0.uf2` | 2–5 | Team picker + two-up compass HUD, now with **positions carried in the beacon** — real meter-scale distances instead of the ~1.4 km floor |
+| `wolfpack-slice5-seeed_wio_tracker_L1-2.7.26.uf2` | 2–5 | Team picker + two-up compass HUD, now with **positions carried in the beacon** — real meter-scale distances instead of the ~1.4 km floor |
 
 ## Flash an L1 (nRF52, USB UF2 only)
 

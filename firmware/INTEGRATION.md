@@ -4,7 +4,12 @@ This `firmware/` subtree holds the **canonical, hand-written** Wolfpack module
 source. It is *not* a fork of the Meshtastic tree — it's the set of files you
 drop into a real `meshtastic/firmware` checkout, plus the one registration line.
 
-Built and verified against upstream **meshtastic/firmware `2.8.0` (git `ec5d230`)**,
+Built and verified against upstream **meshtastic/firmware `v2.7.26` (git `54e0d8d`)**
+— the current stable release tag. (Earlier slices were built on `develop`/`ec5d230`,
+which self-versions as an unreleased "2.8.0"; we rebased onto the tag for
+reproducibility. Two develop-only NodeDB conveniences had to be adapted:
+`copyNodePosition()` → direct `node->position`, and flattened `node->short_name`
+→ `node->user.short_name`.)
 target **`seeed_wio_tracker_L1`** (nRF52840, S140 v7).
 
 ## What slice 2 does
@@ -154,16 +159,20 @@ here and would have been noise.
 
 ## The only edit to an existing file: `src/modules/Modules.cpp`
 
-1. Add the include alongside the other module includes (e.g. just after the
-   `ReplyBotModule.h` block near the top):
+1. Add the include **unconditionally** near the top — do NOT nest it inside the
+   `#if !MESHTASTIC_EXCLUDE_REPLYBOT` guard that wraps `ReplyBotModule.h`. The L1
+   build *excludes* ReplyBot to save flash, so an include placed in that guard gets
+   compiled out while the (unconditional) registration below still references the
+   class → `'wolfpackModule' was not declared`. Put it right after
+   `#include "modules/StatusLEDModule.h"`:
 
    ```cpp
    #include "WolfpackModule.h"
    ```
 
-2. Register it inside **`setupModules()`** — drop it next to the
-   `// new ReplyModule();` example line (in the upstream 2.8.0 tree this is in
-   the `setupModules()` body, right after the `PowerStressModule` block):
+2. Register it inside **`setupModules()`** — drop it right after the
+   `// new ReplyModule();` example line, which sits unconditionally between the
+   `EXCLUDE_POWERSTRESS` and `EXCLUDE_CANNEDMESSAGES` guards:
 
    ```cpp
    wolfpackModule = new WolfpackModule();
@@ -203,13 +212,18 @@ against a known 1°-latitude reference, `wp_bearingDegrees` on the four cardinal
 The `seeed_wio_tracker_L1` image is already tight against its 815104-byte app
 region (the S140 v7 SoftDevice + bootloader eat the rest of the 1 MB).
 
+Rows through slice 5 were measured on `develop` (2.8.0); the final row is the
+current build on the **v2.7.26 stable base** — the numbers shift because the base
+firmware differs, not our module.
+
 | Build | Flash | RAM (static) |
 |---|---|---|
-| Stock 2.8.0 | 88.4% — 720472 B | 46.9% — 116596 B |
-| + Wolfpack slice 2 | 88.5% — 721368 B | 46.9% — 116596 B |
-| + Wolfpack slice 3 | 88.8% — 723928 B | 46.9% — 116596 B |
-| + Wolfpack slice 4 (+ picker fix) | 89.0% — 725720 B | 46.9% — 116644 B |
-| + Wolfpack slice 5 (position-in-beacon) | **89.1% — 726368 B** | 46.9% — 116644 B |
+| Stock develop (2.8.0) | 88.4% — 720472 B | 46.9% — 116596 B |
+| + Wolfpack slice 2 (develop) | 88.5% — 721368 B | 46.9% — 116596 B |
+| + Wolfpack slice 3 (develop) | 88.8% — 723928 B | 46.9% — 116596 B |
+| + Wolfpack slice 4 + picker fix (develop) | 89.0% — 725720 B | 46.9% — 116644 B |
+| + Wolfpack slice 5 (develop) | 89.1% — 726368 B | 46.9% — 116644 B |
+| **+ Wolfpack slice 5 on v2.7.26 (shipping)** | **90.3% — 735720 B** | **44.4% — 110516 B** |
 
 Cost of slice 4 (the picker): **+1472 bytes flash** over slice 3 (the banner
 overlay is stock — we only add options + callbacks), +48 bytes static RAM (the new
