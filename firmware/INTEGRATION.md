@@ -117,6 +117,26 @@ so the **v3 beacon (12 bytes) now carries the sender's full-precision fix**:
 - For rides with 3+ radios on LongFast, consider `--set lora.modem_preset
   MEDIUM_FAST` — 4× the airtime headroom (see the internals doc for the table).
 
+## What slice 6 adds (honest compass states)
+
+Field testing surfaced a UX conflation: the HUD drew a `?` whenever the *viewer*
+was stationary, even though it knew exactly where the teammate was. Distance and
+bearing come from the same two coordinates — only the *rotation* into a body arrow
+needs GPS course. Slice 6 splits the two axes in `wpDrawCell`:
+
+- **fresh fix + moving** → rotating rose + relative arrow + distance.
+- **fresh fix + stopped** → absolute cardinal in the rose + distance (`NE 200m`),
+  no `?`. (No absolute north-up *arrow* — on a handheld not held north-up that's
+  the same wrong-way lie we avoid; text cardinal only.)
+- **stale fix** → `?` + `~`last-known distance. `?` now means only "we've lost
+  their position," never "you're standing still."
+
+Freshness (`WP_POS_STALE_MS = 150 s`) keys on `posMs` — the last *position*-
+carrying beacon — falling back to `lastHeardMs` for v2 peers. Because a
+position-less heartbeat advances `lastHeardMs` but not `posMs`, a radio whose GPS
+drops mid-ride ages out to `?`: a free loose-antenna detector. No new files or
+Modules.cpp edits; the change is contained to `WolfpackModule.cpp`.
+
 ## L1 battery: it's an I2C fuel gauge, not the ADC (corrected 2026-06-29)
 
 Earlier builds set `config.power.adc_multiplier_override = 2.54` on boot, on the
@@ -223,7 +243,8 @@ firmware differs, not our module.
 | + Wolfpack slice 3 (develop) | 88.8% — 723928 B | 46.9% — 116596 B |
 | + Wolfpack slice 4 + picker fix (develop) | 89.0% — 725720 B | 46.9% — 116644 B |
 | + Wolfpack slice 5 (develop) | 89.1% — 726368 B | 46.9% — 116644 B |
-| **+ Wolfpack slice 5 on v2.7.26 (shipping)** | **90.3% — 735720 B** | **44.4% — 110516 B** |
+| + Wolfpack slice 5 on v2.7.26 | 90.3% — 735720 B | 44.4% — 110516 B |
+| **+ Wolfpack slice 6 on v2.7.26 (shipping)** | **90.3% — 735816 B** | **44.4% — 110516 B** |
 
 Cost of slice 4 (the picker): **+1472 bytes flash** over slice 3 (the banner
 overlay is stock — we only add options + callbacks), +48 bytes static RAM (the new

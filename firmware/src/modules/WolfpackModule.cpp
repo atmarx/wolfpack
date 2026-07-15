@@ -26,6 +26,14 @@ static constexpr int32_t WP_TEAM_TICK_MS = 5 * 1000;
 static constexpr uint32_t WP_BEACON_IDLE_MS = 60 * 1000;
 static constexpr float WP_MOVE_RESEND_DEFAULT_M = 25.0f;
 
+// A teammate's position is trusted for this long after their last position-fix
+// beacon. A live peer refreshes at least every WP_BEACON_IDLE_MS (60 s heartbeat),
+// so this must clear one fully-dropped LoRa heartbeat (~120 s) without flapping.
+// Past it we no longer know where they are (out of range, or GPS lost mid-ride —
+// their beacons keep coming, position-less, so posMs stops advancing) and the HUD
+// falls back to an honest "?" instead of a stale pointer.
+static constexpr uint32_t WP_POS_STALE_MS = 150 * 1000;
+
 // While a pick flow is in progress, tick fast so each banner opens promptly once
 // the previous overlay clears (selection callbacks also wake us immediately).
 static constexpr int32_t WP_PICK_TICK_MS = 250;
@@ -303,12 +311,19 @@ static void wpFormatDistance(float meters, char *buf, size_t buflen)
     }
 }
 
-// One teammate's cell: name on top, compass (arrow if we have a fresh heading,
-// else "?") in the middle, distance (+ absolute heading-cardinal when stale) on
-// the bottom. Drawn inside the column [colX, colX+colW).
+// One teammate's cell: name on top, compass in the middle, distance on the
+// bottom. Three states, gated on two INDEPENDENT questions — do we know where
+// they are (posFresh), and can we make it body-relative (haveHeading)?
+//   posFresh + moving  -> rotating rose + relative arrow  ("walk toward it")
+//   posFresh + stopped -> absolute cardinal in the rose   ("they're NE, 200 m")
+//   !posFresh          -> "?" + "~" last-known distance    ("lost their fix")
+// The "?" means *unknown location*, never *I'm standing still* — a stopped rider
+// still gets a true cardinal, because distance and bearing are the same two
+// coordinates; only the rotation into a body arrow needs GPS course.
+// Drawn inside the column [colX, colX+colW).
 static void wpDrawCell(OLEDDisplay *display, int16_t colX, int16_t colW, int16_t top, int16_t bottom, const char *name,
                        double myLat, double myLon, double peerLat, double peerLon, float distMeters, bool haveHeading,
-                       float myHeadingRad)
+                       float myHeadingRad, bool posFresh)
 {
     const int16_t cx = colX + colW / 2;
     const int16_t nameY = top;
@@ -329,21 +344,29 @@ static void wpDrawCell(OLEDDisplay *display, int16_t colX, int16_t colW, int16_t
     display->drawString(cx, nameY, name);
     display->drawCircle(cx, cyc, rad);
 
-    if (haveHeading) {
-        // Moving: rotating north marker + a relative arrow pointing at the peer.
+    if (!posFresh) {
+        // No recent fix from this teammate — their location is unknown or gone
+        // stale (out of range, or their GPS dropped mid-ride). Any pointer would
+        // be guessing, so show an honest "?" plus a "~" last-known distance.
+        display->setTextAlignment(TEXT_ALIGN_CENTER);
+        display->drawString(cx, (int16_t)(cyc - FONT_HEIGHT_SMALL / 2), "?");
+        char line[20];
+        snprintf(line, sizeof(line), "~%s", dist);
+        display->drawString(cx, distY, line);
+    } else if (haveHeading) {
+        // Moving with a fresh fix: rotating north marker + a relative arrow.
         graphics::CompassRenderer::drawCompassNorth(display, cx, cyc, myHeadingRad, rad);
         float relRad = graphics::CompassRenderer::adjustBearingForCompassMode(absBearingDeg * (float)WP_DEG2RAD, myHeadingRad);
         graphics::CompassRenderer::drawNodeHeading(display, cx, cyc, (uint16_t)(rad * 2), relRad);
         display->setTextAlignment(TEXT_ALIGN_CENTER);
         display->drawString(cx, distY, dist);
     } else {
-        // Stopped / no GPS course: a relative arrow would lie. Show "?" in the
-        // rose and fall back to the honest absolute compass cardinal + distance.
+        // Fresh fix but standing still (no GPS course): we know exactly where they
+        // are, just can't rotate it to a body arrow without a compass. Show the
+        // absolute cardinal in the rose + plain distance — no misleading "?".
         display->setTextAlignment(TEXT_ALIGN_CENTER);
-        display->drawString(cx, (int16_t)(cyc - FONT_HEIGHT_SMALL / 2), "?");
-        char line[20];
-        snprintf(line, sizeof(line), "%s %s", wp_cardinal8(absBearingDeg), dist);
-        display->drawString(cx, distY, line);
+        display->drawString(cx, (int16_t)(cyc - FONT_HEIGHT_SMALL / 2), wp_cardinal8(absBearingDeg));
+        display->drawString(cx, distY, dist);
     }
 }
 
@@ -393,6 +416,7 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
     // One heading lookup for both cells. false => not moving / no course yet.
     float myHeadingRad = 0.0f;
     const bool haveHeading = graphics::CompassRenderer::getHeadingRadians(myLat, myLon, myHeadingRad);
+    const uint32_t now = millis();
 
     // Gather same-team teammates that currently have a known position. Beacon
     // positions (v3: full precision, seconds fresh) win; NodeDB is the fallback
@@ -448,8 +472,13 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
         // synthesize the team code from the beacon so the cell is never nameless.
         char synth[3] = {wp_colorChar((WolfpackColor)peer->color), wp_roleChar((WolfpackRole)peer->role), '\0'};
         const char *nm = (pn && pn->has_user && pn->user.short_name[0]) ? pn->user.short_name : synth;
+        // Freshness gates the "?": trust a beacon position (posMs) first; fall back
+        // to last-heard for v2 peers that never carried one. A peer whose GPS died
+        // keeps a non-zero (frozen) posMs, so it ages out here and reads "?".
+        const uint32_t fMs = peer->posMs ? peer->posMs : peer->lastHeardMs;
+        const bool posFresh = (fMs != 0) && (now - fMs < WP_POS_STALE_MS);
         wpDrawCell(display, (int16_t)(x + c * colW), colW, top, bottom, nm, myLat, myLon, wpDeg(candLatI[pick[c]]),
-                   wpDeg(candLonI[pick[c]]), candDist[pick[c]], haveHeading, myHeadingRad);
+                   wpDeg(candLonI[pick[c]]), candDist[pick[c]], haveHeading, myHeadingRad, posFresh);
     }
 
     // Vertical divider between the two cells.

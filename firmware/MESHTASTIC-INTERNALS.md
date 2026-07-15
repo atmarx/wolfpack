@@ -144,24 +144,42 @@ course-over-ground** (`Screen::estimatedHeading()`, wrapped by
 course is computed from the vector between successive fixes.  Stand still and
 there is no course, so `getHeadingRadians()` returns false.
 
-What the HUD does with that (slice 3, deliberately honest):
+What the HUD does with that (slice 6 — two INDEPENDENT axes, not one):
 
-- **Moving** → real device-relative arrow ("teammate is 30° to your left").
-- **Stopped / no course** → `?` in the compass rose plus an **absolute** cardinal
-  and distance ("NE 142 m").  Distance is always correct; only the *relative*
-  arrow needs motion.  We never draw a relative arrow we can't justify — a
-  confident arrow pointing the wrong way is worse than an honest `?`.
+The mistake slice 3 made was gating the `?` on *my* motion.  But "can I draw an
+arrow" and "do I know where they are" are different questions with different
+inputs.  Distance and bearing come from the *same two coordinates* — the moment
+you have both fixes you know the teammate is "NE, 200 m."  Only the *rotation*
+of that bearing into a body-relative arrow needs your GPS course.  So:
 
-So the field rule is real: **roll a few meters before trusting the arrow.**  A
-stopped rider still gets range + an absolute compass bearing, but must know where
-north is to use it.
+| their fix fresh? (`posMs` < ~150 s) | my course? (`getHeadingRadians`) | render |
+|---|---|---|
+| yes | yes | rotating rose + **relative arrow** + distance |
+| yes | no  | **absolute cardinal** in the rose + distance (`NE 200m`) |
+| no  | —   | **`?`** + `~`last-known distance |
 
-Possible future softening (not built): cache the last valid heading for N seconds
-after stopping.  For a bar-mounted radio on a stopped-but-not-turned bike the
-cached course is still true, so a glance at a stop sign would keep the arrow.
-The catch is it lies the moment the bike (or a handheld) rotates — so it'd want
-a visual "stale" treatment (dashed/dimmed arrow) and a short timeout.  Flag for
-discussion; the honest `?` is correct until then.
+- We never draw a relative arrow we can't justify — a confident arrow pointing
+  the wrong way is worse than an honest cardinal.  (This is also why we *don't*
+  draw an absolute north-up arrow when stopped: on a handheld that isn't held
+  north-up it's the same lie.  Text cardinal only.)
+- The `?` now means exactly one thing: **we've lost track of where they are.**
+  Freshness is keyed on `posMs` (the timestamp of the last *position-carrying*
+  beacon), falling back to `lastHeardMs` for legacy v2 peers.  A position-less
+  heartbeat advances `lastHeardMs` but not `posMs`, so a radio whose GPS drops
+  mid-ride ages out of "fresh" and reads `?` — a free **loose-antenna detector**.
+
+So the field rule still holds: **roll a few meters before trusting the arrow.**
+A stopped rider gets range + an absolute cardinal (know where north is to use it);
+`?` means the teammate went quiet, not that you did.
+
+Staleness window `WP_POS_STALE_MS` = 150 s: must clear one fully-dropped 60 s
+heartbeat (~120 s) without flapping.  Tune in `WolfpackModule.cpp`.
+
+Still not built (cache-last-heading): hold the last valid *course* for N seconds
+after stopping, so a bar-mounted radio on a stopped-but-not-turned bike keeps its
+relative arrow.  It lies the instant the bike/handheld rotates, so it'd need a
+dashed/dimmed "stale arrow" treatment + timeout.  The cardinal fallback is honest
+and covers the stopped case, so this stays a nice-to-have.
 
 ## 4. Module scheduling
 

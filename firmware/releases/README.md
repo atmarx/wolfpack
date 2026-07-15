@@ -7,7 +7,7 @@ target `seeed_wio_tracker_L1`.
 
 | File | Slice | What you'll see |
 |---|---|---|
-| `wolfpack-slice5-seeed_wio_tracker_L1-2.7.26.uf2` | 2–5 | Team picker + two-up compass HUD, now with **positions carried in the beacon** — real meter-scale distances instead of the ~1.4 km floor |
+| `wolfpack-slice6-seeed_wio_tracker_L1-2.7.26.uf2` | 2–6 | Team picker + two-up compass HUD, positions **carried in the beacon** (real meter-scale distances), and an **honest compass** — relative arrow while moving, absolute cardinal (`NE 200m`) while stopped, `?` only when a teammate's fix has actually gone stale |
 
 ## Flash an L1 (nRF52, USB UF2 only)
 
@@ -36,11 +36,33 @@ meshtastic --set position.broadcast_smart_minimum_distance 25   # riding (also t
 For rides with 3+ radios, `meshtastic --set lora.modem_preset MEDIUM_FAST` on
 every radio buys 4× the airtime headroom (optional but recommended).
 
+## Reading the compass (slice 6)
+
+The L1 has no magnetometer, so it can't sense which way it points while still —
+it borrows heading from your GPS course-over-ground. The HUD stays honest about
+that, gating on two separate facts:
+
+- **Moving, teammate's fix fresh** → a **relative arrow**: point yourself at it
+  and ride.
+- **Stopped, teammate's fix fresh** → an **absolute cardinal** in the rose plus
+  distance (`NE 200m`). We know exactly where they are; you just have to know
+  where north is, because we can't rotate it to your body without a compass.
+  Roll a few meters and it becomes a relative arrow.
+- **Teammate's fix stale** (no position beacon in ~150 s — out of range, or their
+  GPS dropped) → a `?` and a `~`-prefixed last-known distance. The `?` means
+  *"I've lost track of where they are,"* never *"you're standing still."*
+
+That last state is also a **loose-GPS-cable detector**: a radio that boots with a
+fix then loses its antenna keeps beaconing (LoRa's fine) but stops sending
+positions, so its teammates' HUDs flip it to `?`. Reseat the connector and it
+snaps back to a cardinal/arrow.
+
 > ⚠️ **Never flash over BLE / NRF-OTA on the L1** — it can brick the board. USB
 > UF2 only. A wrong *app* UF2 is harmless (double-tap back to the drive, drop a
 > good one); only a bad *bootloader* bricks, and normal flashing never touches it.
 
 Config (names, `US_915` region) persists across a UF2 app-flash.
 
-Known cosmetic issue: the battery shows **0% + a USB icon** — the L1's fuel
-gauge misreports; radios run fine on battery. Diagnosis in progress.
+Battery reads correctly on this build. The earlier **0% + USB icon** was a
+regression in upstream `develop`'s reworked `Power.cpp`, not a hardware quirk —
+building on the `v2.7.26` stable tag reads the L1's fuel gauge fine.
