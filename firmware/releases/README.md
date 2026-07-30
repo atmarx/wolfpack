@@ -7,7 +7,7 @@ target `seeed_wio_tracker_L1`.
 
 | File | Slice | What you'll see |
 |---|---|---|
-| `wolfpack-slice6-seeed_wio_tracker_L1-2.7.26.uf2` | 2–6 | Team picker + two-up compass HUD, positions **carried in the beacon** (real meter-scale distances), and an **honest compass** — relative arrow while moving, absolute cardinal (`NE 200m`) while stopped, `?` only when a teammate's fix has actually gone stale |
+| `wolfpack-slice7-seeed_wio_tracker_L1-2.7.26.uf2` | 2–7 | Team picker + two-up compass HUD, positions **carried in the beacon** (real meter-scale distances), an **honest compass** — relative arrow while moving, absolute cardinal (`NE 200m`) while stopped, `?` only when a teammate's fix has actually gone stale — plus a **fix-age counter** per teammate (`7s`, top-left of the cell: seconds since their last position landed) and a faster 3 s beacon tick |
 
 ## Flash an L1 (nRF52, USB UF2 only)
 
@@ -24,7 +24,7 @@ Meshtastic truncates native position packets to the channel's
 `position_precision` — default **13 bits ≈ 5.8 km cells** — and rate-limits
 movement broadcasts to one per 5 minutes. Slice 5 sidesteps both: the Wolfpack
 beacon carries its own full-precision fix, re-sent whenever you move past the
-threshold (evaluated every 5 s) with a 60 s heartbeat floor. No channel config
+threshold (evaluated every 3 s) with a 60 s heartbeat floor. No channel config
 needed. Full story: `../MESHTASTIC-INTERNALS.md`.
 
 **Tuning the resend distance (no reflash):**
@@ -35,6 +35,16 @@ meshtastic --set position.broadcast_smart_minimum_distance 25   # riding (also t
 
 For rides with 3+ radios, `meshtastic --set lora.modem_preset MEDIUM_FAST` on
 every radio buys 4× the airtime headroom (optional but recommended).
+
+## Reading the fix-age counter (slice 7)
+
+Top-left of each teammate cell is a small counter — `7s`, `42s`, `3m` — that is
+**how old that teammate's position reading is**. It resets to `0s` every time
+one of their position beacons lands and counts up from there. A pack in motion
+should sit in single digits (3 s tick + movement resends); creeping past ~30 s
+means you're at the edge of radio range or the channel is saturated; at ~150 s
+the cell flips to `?`. It's the same honesty rule as the compass: the HUD shows
+you not just the reading, but how much to trust it.
 
 ## Reading the compass (slice 6)
 

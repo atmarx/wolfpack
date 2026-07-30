@@ -100,7 +100,7 @@ so the **v3 beacon (12 bytes) now carries the sender's full-precision fix**:
 [4..7] int32 latitude_i   [8..11] int32 longitude_i   (little-endian, 1e-7°)
 ```
 
-- **Adaptive cadence**: 5 s tick; send when moved past the resend threshold
+- **Adaptive cadence**: 3 s tick; send when moved past the resend threshold
   since the last *sent* fix, with a 60 s heartbeat floor. Movement sends gate on
   the polite (25%) airtime ceiling, heartbeats on the hard (40%) one — pressure
   sheds fidelity first, never liveness. Beacons go out `hop_limit=1` (one relay
@@ -136,6 +136,27 @@ carrying beacon — falling back to `lastHeardMs` for v2 peers. Because a
 position-less heartbeat advances `lastHeardMs` but not `posMs`, a radio whose GPS
 drops mid-ride ages out to `?`: a free loose-antenna detector. No new files or
 Modules.cpp edits; the change is contained to `WolfpackModule.cpp`.
+
+## What slice 7 adds (fix-age counter + 3 s tick)
+
+Field feedback: distances "felt fuzzy" on the move. They were honest but their
+*age* was invisible — the reading is your live position against the teammate's
+last received fix, and at riding speed every second of beacon lag is 5–8 m of
+phantom distance. Slice 7 makes the age visible instead of leaving the rider to
+guess:
+
+- **Fix-age counter**, top-left of each teammate cell: seconds since their last
+  position-carrying beacon landed (`7s` → `42s` → `3m`, capped at `1h+`). Pure
+  rendered age off `posMs` — no new state; it "resets" because a fresh beacon
+  updates the timestamp. Hidden only when no fix was ever heard. The idle screen
+  refresh is 1 fps (`IDLE_FRAMERATE`, Screen.cpp), so it visibly ticks.
+- **Beacon tick 5 s → 3 s** (`WP_TEAM_TICK_MS`): the movement-resend check runs
+  more often, so cadence tracks speed more tightly. 3 s is the floor worth
+  having — on MediumFast a 3-node moving pack sits right at the polite 25% util
+  ceiling; on LongFast the airtime gates dominate at any tick.
+
+Contained to `WolfpackModule.cpp` (`wpFormatAge`, `wpDrawCell`); no new files,
+no Modules.cpp edits, no protocol change (still v3 beacons).
 
 ## L1 battery: it's an I2C fuel gauge, not the ADC (corrected 2026-06-29)
 
@@ -244,7 +265,8 @@ firmware differs, not our module.
 | + Wolfpack slice 4 + picker fix (develop) | 89.0% — 725720 B | 46.9% — 116644 B |
 | + Wolfpack slice 5 (develop) | 89.1% — 726368 B | 46.9% — 116644 B |
 | + Wolfpack slice 5 on v2.7.26 | 90.3% — 735720 B | 44.4% — 110516 B |
-| **+ Wolfpack slice 6 on v2.7.26 (shipping)** | **90.3% — 735816 B** | **44.4% — 110516 B** |
+| + Wolfpack slice 6 on v2.7.26 | 90.3% — 735816 B | 44.4% — 110516 B |
+| **+ Wolfpack slice 7 on v2.7.26 (shipping)** | **90.3% — 736040 B** | **44.4% — 110516 B** |
 
 Cost of slice 4 (the picker): **+1472 bytes flash** over slice 3 (the banner
 overlay is stock — we only add options + callbacks), +48 bytes static RAM (the new

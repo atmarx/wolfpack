@@ -20,9 +20,12 @@ WolfpackModule *wolfpackModule;
 // heartbeat once per WP_BEACON_IDLE_MS keeps peer liveness even when parked;
 // moving past the resend threshold (wpMoveThresholdMeters) since the last *sent*
 // fix re-sends early so followers track a moving pack — worst case one tick
-// stale. Sends are airtime-gated (runOnce). The 5 s tick caps update freshness;
-// on a busy channel the gates back sends off well before that.
-static constexpr int32_t WP_TEAM_TICK_MS = 5 * 1000;
+// stale. Sends are airtime-gated (runOnce). The tick caps update freshness; on a
+// busy channel the gates back sends off well before that. 3 s is the floor worth
+// having: on MediumFast a 3-node pack moving continuously sits right at the
+// polite 25% util ceiling (~250 ms/beacon), and on LongFast (~1.1 s/beacon) the
+// gates dominate at any tick, so faster ticking buys nothing but gate-thrash.
+static constexpr int32_t WP_TEAM_TICK_MS = 3 * 1000;
 static constexpr uint32_t WP_BEACON_IDLE_MS = 60 * 1000;
 static constexpr float WP_MOVE_RESEND_DEFAULT_M = 25.0f;
 
@@ -311,6 +314,19 @@ static void wpFormatDistance(float meters, char *buf, size_t buflen)
     }
 }
 
+// Age of a peer's last position fix, rendered tiny: raw seconds under 100 (the
+// range where it drives riding decisions), then minutes, then a flat "1h+" —
+// past that the number is trivia, not information.
+static void wpFormatAge(uint32_t secs, char *buf, size_t buflen)
+{
+    if (secs < 100)
+        snprintf(buf, buflen, "%us", (unsigned)secs);
+    else if (secs < 6000)
+        snprintf(buf, buflen, "%um", (unsigned)(secs / 60));
+    else
+        snprintf(buf, buflen, "1h+");
+}
+
 // One teammate's cell: name on top, compass in the middle, distance on the
 // bottom. Three states, gated on two INDEPENDENT questions — do we know where
 // they are (posFresh), and can we make it body-relative (haveHeading)?
@@ -320,10 +336,13 @@ static void wpFormatDistance(float meters, char *buf, size_t buflen)
 // The "?" means *unknown location*, never *I'm standing still* — a stopped rider
 // still gets a true cardinal, because distance and bearing are the same two
 // coordinates; only the rotation into a body arrow needs GPS course.
+// ageSecs (slice 7) is how long ago this position arrived — drawn as a small
+// counter in the cell's top-left, "resetting" to 0s whenever a beacon lands
+// because it's just rendered age, not state. -1 hides it (no fix ever heard).
 // Drawn inside the column [colX, colX+colW).
 static void wpDrawCell(OLEDDisplay *display, int16_t colX, int16_t colW, int16_t top, int16_t bottom, const char *name,
                        double myLat, double myLon, double peerLat, double peerLon, float distMeters, bool haveHeading,
-                       float myHeadingRad, bool posFresh)
+                       float myHeadingRad, bool posFresh, int32_t ageSecs)
 {
     const int16_t cx = colX + colW / 2;
     const int16_t nameY = top;
@@ -340,6 +359,12 @@ static void wpDrawCell(OLEDDisplay *display, int16_t colX, int16_t colW, int16_t
     const float absBearingDeg = wp_bearingDegrees(myLat, myLon, peerLat, peerLon);
 
     display->setFont(FONT_SMALL);
+    if (ageSecs >= 0) {
+        char age[8];
+        wpFormatAge((uint32_t)ageSecs, age, sizeof(age));
+        display->setTextAlignment(TEXT_ALIGN_LEFT);
+        display->drawString((int16_t)(colX + 1), nameY, age);
+    }
     display->setTextAlignment(TEXT_ALIGN_CENTER);
     display->drawString(cx, nameY, name);
     display->drawCircle(cx, cyc, rad);
@@ -477,8 +502,9 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
         // keeps a non-zero (frozen) posMs, so it ages out here and reads "?".
         const uint32_t fMs = peer->posMs ? peer->posMs : peer->lastHeardMs;
         const bool posFresh = (fMs != 0) && (now - fMs < WP_POS_STALE_MS);
+        const int32_t ageSecs = fMs ? (int32_t)((now - fMs) / 1000) : -1;
         wpDrawCell(display, (int16_t)(x + c * colW), colW, top, bottom, nm, myLat, myLon, wpDeg(candLatI[pick[c]]),
-                   wpDeg(candLonI[pick[c]]), candDist[pick[c]], haveHeading, myHeadingRad, posFresh);
+                   wpDeg(candLonI[pick[c]]), candDist[pick[c]], haveHeading, myHeadingRad, posFresh, ageSecs);
     }
 
     // Vertical divider between the two cells.

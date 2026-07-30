@@ -103,7 +103,7 @@ the hard one.  On LongFast a 3-rider pack at 15 s cadence sits *at* the polite
 ceiling; 6 riders blow through it.
 
 **Wolfpack does three things about it:**
-1. Beacon cadence is adaptive: 5 s tick, but only *send* when moved past the
+1. Beacon cadence is adaptive: 3 s tick, but only *send* when moved past the
    resend threshold since the last sent fix, with a 60 s heartbeat floor.
    Stationary pack ≈ 1 beacon/min/node.  The threshold is **runtime-tunable**
    via `position.broadcast_smart_minimum_distance` (our default 25 m; set ~5 m
