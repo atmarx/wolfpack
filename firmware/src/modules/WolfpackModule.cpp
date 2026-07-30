@@ -1,4 +1,5 @@
 #include "WolfpackModule.h"
+#include "GPSStatus.h" // gpsStatus — the chip's own Doppler course (slice 8 heading)
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "PowerStatus.h" // powerStatus global (battery telemetry probe)
@@ -15,6 +16,10 @@
 #endif
 
 WolfpackModule *wolfpackModule;
+
+// Slice 8: the lead's recorded route. 8 KB of BSS, deliberately NOT a class
+// member on the heap so the linker's RAM report keeps us honest about it.
+static WolfpackGhostTrail wpGhostTrail;
 
 // Beacon cadence (slice 5): evaluate every WP_TEAM_TICK_MS, send adaptively. A
 // heartbeat once per WP_BEACON_IDLE_MS keeps peer liveness even when parked;
@@ -221,6 +226,24 @@ ProcessMessage WolfpackModule::handleReceived(const meshtastic_MeshPacket &mp)
         LOG_DEBUG("Wolfpack: peer 0x%x color=%u role=%u pos=%d", mp.from, beacon.color, beacon.role,
                   (int)((beacon.flags & WP_FLAG_HAS_POSITION) != 0));
 
+        // Slice 8: breadcrumb the lead's route. Every non-lead teammate records
+        // the lead's position beacons (>= WP_GHOST_SPACING_M apart) so the HUD
+        // can answer "when the lead was where I am now, which way did they go?"
+        if (beacon.role == WP_LEADER && (beacon.flags & WP_FLAG_HAS_POSITION)) {
+            WolfpackColor myColor;
+            WolfpackRole myRole;
+            wp_parseColorRole(owner.short_name, myColor, myRole);
+            if (myRole != WP_LEADER && wp_isSameTeam((WolfpackColor)beacon.color, myColor)) {
+                if (ghostLeadNum != mp.from) {
+                    // New lead (first heard, or re-pick mid-ride): the old trail
+                    // is another rider's history — drop it, don't splice it.
+                    wp_ghostReset(wpGhostTrail);
+                    ghostLeadNum = mp.from;
+                }
+                wp_ghostAppend(wpGhostTrail, beacon.lat_i, beacon.lon_i);
+            }
+        }
+
 #if HAS_SCREEN
         // Lead-uniqueness backstop for the out-of-range case the picker can't
         // prevent: if a same-color Lead appears and outranks us (lower node-num
@@ -327,6 +350,27 @@ static void wpFormatAge(uint32_t secs, char *buf, size_t buflen)
         snprintf(buf, buflen, "1h+");
 }
 
+// Our own heading, chip-first (slice 8). Upstream's estimatedHeading() only
+// recomputes after 10 m of travel from a reference point — at walking speed
+// that's a ~7 s old *average* direction, which is the "slow to notice I turned"
+// lag from field testing. The L76K computes course-over-ground from Doppler on
+// every fix (1 Hz, no displacement needed — same reason car dashboards feel
+// instant). So: upstream keeps deciding the moving/stopped CLASSIFICATION
+// (slice 6 semantics untouched), but while "moving" the heading VALUE comes
+// from the chip when it has one. FREEZE_HEADING mode is respected — the user
+// asked for a pinned compass, don't fight them.
+static bool wpOwnHeadingRadians(double myLat, double myLon, float &out)
+{
+    if (!graphics::CompassRenderer::getHeadingRadians(myLat, myLon, out))
+        return false;
+    if (uiconfig.compass_mode != meshtastic_CompassMode_FREEZE_HEADING && gpsStatus && gpsStatus->getHasLock()) {
+        const uint32_t track = gpsStatus->getHeading(); // chip course, degrees * 1e-5
+        if (track < 36000000U)
+            out = (float)((double)track * 1e-5 * WP_DEG2RAD);
+    }
+    return true;
+}
+
 // One teammate's cell: name on top, compass in the middle, distance on the
 // bottom. Three states, gated on two INDEPENDENT questions — do we know where
 // they are (posFresh), and can we make it body-relative (haveHeading)?
@@ -339,10 +383,13 @@ static void wpFormatAge(uint32_t secs, char *buf, size_t buflen)
 // ageSecs (slice 7) is how long ago this position arrived — drawn as a small
 // counter in the cell's top-left, "resetting" to 0s whenever a beacon lands
 // because it's just rendered age, not state. -1 hides it (no fix ever heard).
+// ghostDir (slice 8, lead's cell only) is the cardinal the lead DEPARTED from
+// where the viewer now stands — drawn top-right as ">NE" when the viewer is on
+// the lead's recorded trail. NULL hides it.
 // Drawn inside the column [colX, colX+colW).
 static void wpDrawCell(OLEDDisplay *display, int16_t colX, int16_t colW, int16_t top, int16_t bottom, const char *name,
                        double myLat, double myLon, double peerLat, double peerLon, float distMeters, bool haveHeading,
-                       float myHeadingRad, bool posFresh, int32_t ageSecs)
+                       float myHeadingRad, bool posFresh, int32_t ageSecs, const char *ghostDir)
 {
     const int16_t cx = colX + colW / 2;
     const int16_t nameY = top;
@@ -364,6 +411,12 @@ static void wpDrawCell(OLEDDisplay *display, int16_t colX, int16_t colW, int16_t
         wpFormatAge((uint32_t)ageSecs, age, sizeof(age));
         display->setTextAlignment(TEXT_ALIGN_LEFT);
         display->drawString((int16_t)(colX + 1), nameY, age);
+    }
+    if (ghostDir) {
+        char g[6];
+        snprintf(g, sizeof(g), ">%s", ghostDir);
+        display->setTextAlignment(TEXT_ALIGN_RIGHT);
+        display->drawString((int16_t)(colX + colW - 1), nameY, g);
     }
     display->setTextAlignment(TEXT_ALIGN_CENTER);
     display->drawString(cx, nameY, name);
@@ -439,8 +492,9 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
     const double myLon = wpDeg(me->position.longitude_i);
 
     // One heading lookup for both cells. false => not moving / no course yet.
+    // Chip-course first (slice 8) — see wpOwnHeadingRadians.
     float myHeadingRad = 0.0f;
-    const bool haveHeading = graphics::CompassRenderer::getHeadingRadians(myLat, myLon, myHeadingRad);
+    const bool haveHeading = wpOwnHeadingRadians(myLat, myLon, myHeadingRad);
     const uint32_t now = millis();
 
     // Gather same-team teammates that currently have a known position. Beacon
@@ -503,8 +557,16 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
         const uint32_t fMs = peer->posMs ? peer->posMs : peer->lastHeardMs;
         const bool posFresh = (fMs != 0) && (now - fMs < WP_POS_STALE_MS);
         const int32_t ageSecs = fMs ? (int32_t)((now - fMs) / 1000) : -1;
+        // Slice 8: the ghost — when this cell is the lead whose trail we hold and
+        // the viewer is standing on that trail, show the lead's departure cardinal.
+        const char *ghostDir = NULL;
+        if ((WolfpackRole)peer->role == WP_LEADER && peer->num == ghostLeadNum) {
+            float gDeg;
+            if (wp_ghostQuery(wpGhostTrail, myLat, myLon, gDeg))
+                ghostDir = wp_cardinal8(gDeg);
+        }
         wpDrawCell(display, (int16_t)(x + c * colW), colW, top, bottom, nm, myLat, myLon, wpDeg(candLatI[pick[c]]),
-                   wpDeg(candLonI[pick[c]]), candDist[pick[c]], haveHeading, myHeadingRad, posFresh, ageSecs);
+                   wpDeg(candLonI[pick[c]]), candDist[pick[c]], haveHeading, myHeadingRad, posFresh, ageSecs, ghostDir);
     }
 
     // Vertical divider between the two cells.

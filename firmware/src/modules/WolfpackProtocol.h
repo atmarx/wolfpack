@@ -246,6 +246,85 @@ inline uint8_t wp_twoNearest(const float *dists, uint8_t n, uint8_t out[2])
 }
 
 // ----------------------------------------------------------------------------
+// Slice 8: ghost trail — the lead's route as breadcrumbs, recorded by every
+// follower from the lead's own position beacons. The radio never needs to know
+// what a fork is; the trail always answers ONE question: "when the lead was
+// where I am now, which way did they go?" On plain trail that's just "onward";
+// at a fork it's the answer the sweep came for. Ring buffer, oldest overwritten:
+// 1024 crumbs at >=20 m spacing covers ~20+ km of route in 8 KB.
+// ----------------------------------------------------------------------------
+
+#define WP_GHOST_MAX 1024
+static const float WP_GHOST_SPACING_M = 20.0f; // min distance between stored crumbs
+static const float WP_GHOST_NEAR_M = 30.0f;    // "the lead was here" match radius
+
+struct WolfpackGhostTrail {
+    int32_t lat_i[WP_GHOST_MAX]; // 1e-7 degrees, same fixed-point as the beacon
+    int32_t lon_i[WP_GHOST_MAX];
+    uint16_t count; // valid crumbs (saturates at WP_GHOST_MAX)
+    uint16_t head;  // ring slot the NEXT crumb will be written to
+};
+
+inline void wp_ghostReset(WolfpackGhostTrail &t)
+{
+    t.count = 0;
+    t.head = 0;
+}
+
+// Ring slot of the logical i-th crumb (0 = oldest surviving).
+inline uint16_t wp_ghostSlot(const WolfpackGhostTrail &t, uint16_t logical)
+{
+    return (uint16_t)((t.head + (uint32_t)WP_GHOST_MAX - t.count + logical) % WP_GHOST_MAX);
+}
+
+// Append a crumb unless it's within WP_GHOST_SPACING_M of the newest one — that
+// dedupes stationary heartbeats and keeps successive crumbs far enough apart
+// that a crumb->next bearing means something. Returns whether it was stored.
+inline bool wp_ghostAppend(WolfpackGhostTrail &t, int32_t lat_i, int32_t lon_i)
+{
+    if (t.count > 0) {
+        const uint16_t newest = wp_ghostSlot(t, (uint16_t)(t.count - 1));
+        if (wp_distanceMeters(t.lat_i[newest] * 1e-7, t.lon_i[newest] * 1e-7, lat_i * 1e-7, lon_i * 1e-7) <
+            WP_GHOST_SPACING_M)
+            return false;
+    }
+    t.lat_i[t.head] = lat_i;
+    t.lon_i[t.head] = lon_i;
+    t.head = (uint16_t)((t.head + 1) % WP_GHOST_MAX);
+    if (t.count < WP_GHOST_MAX)
+        t.count++;
+    return true;
+}
+
+// The ghost lookup: nearest crumb to (myLat, myLon); if it's within
+// WP_GHOST_NEAR_M *and* has a successor, out = bearing crumb -> successor (the
+// direction the lead departed from this spot) and return true. Nearest wins on
+// switchbacks — the closest leg is almost always the leg you're standing on.
+// The newest crumb has no successor (the lead just left it; the live arrow
+// covers that), and an empty/one-crumb trail can't answer at all.
+inline bool wp_ghostQuery(const WolfpackGhostTrail &t, double myLat, double myLon, float &bearingDegOut)
+{
+    if (t.count < 2)
+        return false;
+    int best = -1;
+    float bestDist = 0.0f;
+    for (uint16_t i = 0; i + 1 < t.count; i++) {
+        const uint16_t s = wp_ghostSlot(t, i);
+        const float d = wp_distanceMeters(myLat, myLon, t.lat_i[s] * 1e-7, t.lon_i[s] * 1e-7);
+        if (best < 0 || d < bestDist) {
+            best = (int)i;
+            bestDist = d;
+        }
+    }
+    if (best < 0 || bestDist > WP_GHOST_NEAR_M)
+        return false;
+    const uint16_t from = wp_ghostSlot(t, (uint16_t)best);
+    const uint16_t to = wp_ghostSlot(t, (uint16_t)(best + 1));
+    bearingDegOut = wp_bearingDegrees(t.lat_i[from] * 1e-7, t.lon_i[from] * 1e-7, t.lat_i[to] * 1e-7, t.lon_i[to] * 1e-7);
+    return true;
+}
+
+// ----------------------------------------------------------------------------
 // Display + short-name code helpers (slice 4 picker). The short-name encodes the
 // team: char0 = color, char1 = role, optional trailing digit(s) = collision suffix.
 // ----------------------------------------------------------------------------

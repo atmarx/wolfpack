@@ -7,7 +7,7 @@ target `seeed_wio_tracker_L1`.
 
 | File | Slice | What you'll see |
 |---|---|---|
-| `wolfpack-slice7-seeed_wio_tracker_L1-2.7.26.uf2` | 2–7 | Team picker + two-up compass HUD, positions **carried in the beacon** (real meter-scale distances), an **honest compass** — relative arrow while moving, absolute cardinal (`NE 200m`) while stopped, `?` only when a teammate's fix has actually gone stale — plus a **fix-age counter** per teammate (`7s`, top-left of the cell: seconds since their last position landed) and a faster 3 s beacon tick |
+| `wolfpack-slice8-seeed_wio_tracker_L1-2.7.26.uf2` | 2–8 | Team picker + two-up compass HUD, positions **carried in the beacon** (real meter-scale distances), an **honest compass** (relative arrow moving, absolute cardinal stopped, `?` only when a fix is truly stale), a **fix-age counter** per teammate (`7s`, top-left), the **ghost of the lead** (`>NE`, top-right of the lead's cell: which way the lead went *from where you now stand*), and **chip-course heading** — turns register within a fix or two instead of after 10 m |
 
 ## Flash an L1 (nRF52, USB UF2 only)
 
@@ -35,6 +35,23 @@ meshtastic --set position.broadcast_smart_minimum_distance 25   # riding (also t
 
 For rides with 3+ radios, `meshtastic --set lora.modem_preset MEDIUM_FAST` on
 every radio buys 4× the airtime headroom (optional but recommended).
+
+## Reading the ghost (slice 8)
+
+`>NE` in the top-right of the **lead's** cell means: *the lead passed within
+~30 m of where you're standing, and they left heading NE.* Your radio has been
+quietly recording the lead's beacons as a breadcrumb trail (about 20 km of
+route); the ghost is looked up against **your** position, so at a fork it tells
+you which branch the lead took *from that fork*. No ghost showing means you're
+off the recorded trail, ahead of it, or your radio never heard the lead pass
+this stretch (out of range at the time). On a switchback the nearest leg wins —
+the ghost follows the leg you're on. It's a *cardinal*, like the stopped-state
+compass: `>NE` is NE-by-north, whichever way your bars point.
+
+Heading is also snappier in slice 8: the arrow now follows the GPS chip's own
+per-second course-over-ground while you're moving (the same Doppler-derived
+course a car dashboard uses), instead of waiting for 10 m of travel to
+re-estimate. Expect a turn to register within a second or two.
 
 ## Reading the fix-age counter (slice 7)
 

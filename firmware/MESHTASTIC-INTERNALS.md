@@ -144,6 +144,16 @@ course-over-ground** (`Screen::estimatedHeading()`, wrapped by
 course is computed from the vector between successive fixes.  Stand still and
 there is no course, so `getHeadingRadians()` returns false.
 
+**Slice 8 upgrade — the heading *value* now comes from the chip.**  Upstream's
+`estimatedHeading()` re-derives direction only after **10 m** of travel from a
+reference point (Screen.cpp:328) — a ~7 s-old average at walking speed, felt in
+the field as "slow to notice I turned."  But the L76K reports Doppler-derived
+course-over-ground on every fix (1 Hz, no displacement needed); GPS.cpp:1816
+stores it as `position.ground_track` (degrees ×1e-5), readable via
+`gpsStatus->getHeading()`.  `wpOwnHeadingRadians()` keeps upstream as the
+moving/stopped **gate** (this section's table is unchanged, and `FREEZE_HEADING`
+mode is respected) while taking the heading **value** from the chip when moving.
+
 What the HUD does with that (slice 6 — two INDEPENDENT axes, not one):
 
 The mistake slice 3 made was gating the `?` on *my* motion.  But "can I draw an

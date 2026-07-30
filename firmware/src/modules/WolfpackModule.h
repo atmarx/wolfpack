@@ -114,6 +114,11 @@ class WolfpackModule : public SinglePortModule, private concurrency::OSThread
 
     WolfpackPeer peers[WP_MAX_PEERS] = {};
     uint8_t peerCount = 0;
+
+    // --- Slice 8: whose ghost trail we're recording (0 = no lead heard yet).
+    // The trail itself is a file-scope static in the .cpp (8 KB — keep it in BSS
+    // where the linker's RAM accounting can see it, not on the heap).
+    NodeNum ghostLeadNum = 0;
 };
 
 extern WolfpackModule *wolfpackModule;

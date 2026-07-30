@@ -158,6 +158,36 @@ guess:
 Contained to `WolfpackModule.cpp` (`wpFormatAge`, `wpDrawCell`); no new files,
 no Modules.cpp edits, no protocol change (still v3 beacons).
 
+## What slice 8 adds (ghost of the lead + chip-course heading)
+
+Two field asks from the coaches, one release:
+
+**Ghost trail.** Every non-lead teammate records the lead's position beacons
+into an 8 KB ring (`WolfpackGhostTrail`, 1024 crumbs at ≥20 m spacing ≈ 20+ km
+of route — pure logic in `WolfpackProtocol.h`, host-tested). When the viewer
+stands within 30 m of the lead's recorded track, the lead's cell shows `>NE`
+(top-right): the direction the lead **departed from this spot**. No fork
+detection — on plain trail the ghost just says "onward"; at a fork it's the
+answer the sweep came for. Nearest crumb wins, so on a switchback the leg
+you're on beats the leg 50 m below. Honest limits: the trail only exists where
+your radio *heard* the lead (mid bridging via `hop_limit=1` patches most gaps);
+a lead change (re-pick) resets the ring rather than splicing two riders'
+histories.
+
+**Chip-course heading.** Upstream's `Screen::estimatedHeading` only recomputes
+after 10 m of travel from a reference point — at walking speed a ~7 s-old
+*average* direction, which read as "it takes too long to notice I turned." The
+L76K computes course-over-ground from Doppler on every fix (1 Hz, no
+displacement needed — why car dashboards feel instant), and the firmware
+already captures it (`gpsStatus->getHeading()`, degrees ×1e-5).
+`wpOwnHeadingRadians()` keeps upstream as the moving/stopped *gate* (slice-6
+semantics untouched, `FREEZE_HEADING` respected) but takes the heading *value*
+from the chip while moving. Turns now track within a fix or two.
+
++976 B flash, +8 KB RAM (the ring is deliberately file-scope BSS so the linker
+reports it honestly). New pure functions get 4 more unity tests in
+`test_wolfpack`.
+
 ## L1 battery: it's an I2C fuel gauge, not the ADC (corrected 2026-06-29)
 
 Earlier builds set `config.power.adc_multiplier_override = 2.54` on boot, on the
@@ -266,7 +296,8 @@ firmware differs, not our module.
 | + Wolfpack slice 5 (develop) | 89.1% — 726368 B | 46.9% — 116644 B |
 | + Wolfpack slice 5 on v2.7.26 | 90.3% — 735720 B | 44.4% — 110516 B |
 | + Wolfpack slice 6 on v2.7.26 | 90.3% — 735816 B | 44.4% — 110516 B |
-| **+ Wolfpack slice 7 on v2.7.26 (shipping)** | **90.3% — 736040 B** | **44.4% — 110516 B** |
+| + Wolfpack slice 7 on v2.7.26 | 90.3% — 736040 B | 44.4% — 110516 B |
+| **+ Wolfpack slice 8 on v2.7.26 (shipping)** | **90.4% — 737016 B** | **47.7% — 118708 B** |
 
 Cost of slice 4 (the picker): **+1472 bytes flash** over slice 3 (the banner
 overlay is stock — we only add options + callbacks), +48 bytes static RAM (the new

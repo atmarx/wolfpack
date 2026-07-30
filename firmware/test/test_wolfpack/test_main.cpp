@@ -240,6 +240,83 @@ void test_two_nearest()
     TEST_ASSERT_EQUAL_UINT8(1, out[1]);
 }
 
+// --- slice 8: ghost trail ---
+
+// ~40N latitude. 1e-7 deg of latitude ≈ 1.11 cm; ~25 m ≈ 2247 units; ~25 m of
+// longitude at this latitude ≈ 2933 units.
+static const int32_t GT_LAT0 = 399500000;
+static const int32_t GT_LON0 = -751600000;
+static const int32_t GT_M25_LAT = 2247;
+static const int32_t GT_M25_LON = 2933;
+
+void test_ghost_append_spacing_dedupe()
+{
+    WolfpackGhostTrail t;
+    wp_ghostReset(t);
+    TEST_ASSERT_TRUE(wp_ghostAppend(t, GT_LAT0, GT_LON0));
+    // ~5 m away: swallowed (heartbeats while parked must not spam the ring).
+    TEST_ASSERT_FALSE(wp_ghostAppend(t, GT_LAT0 + 450, GT_LON0));
+    TEST_ASSERT_EQUAL_UINT16(1, t.count);
+    // ~25 m away: stored.
+    TEST_ASSERT_TRUE(wp_ghostAppend(t, GT_LAT0 + GT_M25_LAT, GT_LON0));
+    TEST_ASSERT_EQUAL_UINT16(2, t.count);
+}
+
+void test_ghost_query_departure_bearing()
+{
+    WolfpackGhostTrail t;
+    wp_ghostReset(t);
+    float deg = -1.0f;
+    // Too little trail to answer.
+    TEST_ASSERT_FALSE(wp_ghostQuery(t, GT_LAT0 * 1e-7, GT_LON0 * 1e-7, deg));
+    // Due-north trail, crumbs every ~25 m.
+    for (int i = 0; i < 10; i++)
+        TEST_ASSERT_TRUE(wp_ghostAppend(t, GT_LAT0 + i * GT_M25_LAT, GT_LON0));
+    // Standing on crumb 3: the lead departed due north from here.
+    TEST_ASSERT_TRUE(wp_ghostQuery(t, (GT_LAT0 + 3 * GT_M25_LAT) * 1e-7, GT_LON0 * 1e-7, deg));
+    TEST_ASSERT_TRUE(deg < 1.0f || deg > 359.0f);
+    // ~100 m off the trail: no ghost.
+    TEST_ASSERT_FALSE(wp_ghostQuery(t, (GT_LAT0 + 3 * GT_M25_LAT) * 1e-7, (GT_LON0 + 11700) * 1e-7, deg));
+    // ~20 m ahead of the trail head: only the newest crumb is in range and it
+    // has no successor yet — the live arrow owns that case, not the ghost.
+    TEST_ASSERT_FALSE(wp_ghostQuery(t, (GT_LAT0 + 9 * GT_M25_LAT + 1800) * 1e-7, GT_LON0 * 1e-7, deg));
+}
+
+void test_ghost_switchback_nearest_leg_wins()
+{
+    WolfpackGhostTrail t;
+    wp_ghostReset(t);
+    float deg = -1.0f;
+    // Lower leg runs east; upper leg (~50 m north) runs back west.
+    for (int i = 0; i < 6; i++)
+        TEST_ASSERT_TRUE(wp_ghostAppend(t, GT_LAT0, GT_LON0 + i * GT_M25_LON));
+    TEST_ASSERT_TRUE(wp_ghostAppend(t, GT_LAT0 + 2 * GT_M25_LAT, GT_LON0 + 5 * GT_M25_LON));
+    for (int i = 4; i >= 0; i--)
+        TEST_ASSERT_TRUE(wp_ghostAppend(t, GT_LAT0 + 4 * GT_M25_LAT, GT_LON0 + i * GT_M25_LON));
+    // On the upper leg the nearer (upper) crumbs win: ghost points west.
+    TEST_ASSERT_TRUE(wp_ghostQuery(t, (GT_LAT0 + 4 * GT_M25_LAT) * 1e-7, (GT_LON0 + 3 * GT_M25_LON) * 1e-7, deg));
+    TEST_ASSERT_TRUE(deg > 250.0f && deg < 290.0f);
+    // On the lower leg: east.
+    TEST_ASSERT_TRUE(wp_ghostQuery(t, GT_LAT0 * 1e-7, (GT_LON0 + 2 * GT_M25_LON) * 1e-7, deg));
+    TEST_ASSERT_TRUE(deg > 70.0f && deg < 110.0f);
+}
+
+void test_ghost_ring_wrap()
+{
+    WolfpackGhostTrail t;
+    wp_ghostReset(t);
+    float deg = -1.0f;
+    const int total = WP_GHOST_MAX + 50;
+    for (int i = 0; i < total; i++)
+        TEST_ASSERT_TRUE(wp_ghostAppend(t, GT_LAT0 + i * GT_M25_LAT, GT_LON0));
+    TEST_ASSERT_EQUAL_UINT16(WP_GHOST_MAX, t.count);
+    // The fresh end still answers...
+    TEST_ASSERT_TRUE(wp_ghostQuery(t, (GT_LAT0 + (total - 5) * GT_M25_LAT) * 1e-7, GT_LON0 * 1e-7, deg));
+    TEST_ASSERT_TRUE(deg < 1.0f || deg > 359.0f);
+    // ...and the overwritten oldest crumbs are really gone.
+    TEST_ASSERT_FALSE(wp_ghostQuery(t, GT_LAT0 * 1e-7, GT_LON0 * 1e-7, deg));
+}
+
 void setup()
 {
     initializeTestEnvironment();
@@ -261,6 +338,10 @@ void setup()
     RUN_TEST(test_bearing_cardinals);
     RUN_TEST(test_cardinal8);
     RUN_TEST(test_two_nearest);
+    RUN_TEST(test_ghost_append_spacing_dedupe);
+    RUN_TEST(test_ghost_query_departure_bearing);
+    RUN_TEST(test_ghost_switchback_nearest_leg_wins);
+    RUN_TEST(test_ghost_ring_wrap);
     exit(UNITY_END());
 }
 
