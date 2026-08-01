@@ -36,6 +36,16 @@ meshtastic --set position.broadcast_smart_minimum_distance 25   # riding (also t
 For rides with 3+ radios, `meshtastic --set lora.modem_preset MEDIUM_FAST` on
 every radio buys 4× the airtime headroom (optional but recommended).
 
+**Local time on the clock (no reflash):** the display shows UTC until you give
+the device a POSIX timezone string. For US Eastern:
+```bash
+meshtastic --set device.tzdef "EST5EDT,M3.2.0,M11.1.0"
+```
+That string encodes the DST rules too — it springs forward and falls back on
+its own, so -0400 in summer and -0500 in winter with no further fiddling. Like
+all config, it survives UF2 app-flashes. (Also reachable on-device via the
+system menu's timezone picker.)
+
 ## Reading the ghost (slice 8)
 
 `>NE` in the top-right of the **lead's** cell means: *the lead passed within
