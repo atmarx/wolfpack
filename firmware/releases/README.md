@@ -7,7 +7,28 @@ target `seeed_wio_tracker_L1`.
 
 | File | Slice | What you'll see |
 |---|---|---|
-| `wolfpack-slice8-seeed_wio_tracker_L1-2.7.26.uf2` | 2–8 | Team picker + two-up compass HUD, positions **carried in the beacon** (real meter-scale distances), an **honest compass** (relative arrow moving, absolute cardinal stopped, `?` only when a fix is truly stale), a **fix-age counter** per teammate (`7s`, top-left), the **ghost of the lead** (`>NE`, top-right of the lead's cell: which way the lead went *from where you now stand*), and **chip-course heading** — turns register within a fix or two instead of after 10 m |
+| `wolfpack-slice9-seeed_wio_tracker_L1-2.7.26.uf2` | 2–9 | Team picker + two-up compass HUD, positions **carried in the beacon** (real meter-scale distances), an **honest compass** (relative arrow moving, absolute cardinal stopped, `?` only when a fix is truly stale), a **fix-age counter** per teammate (`7s`, top-left), the **ghost of the lead** (`>NE`, top-right of the lead's cell: which way the lead went *from where you now stand*), **chip-course heading** — turns register within a fix or two instead of after 10 m — and **Start Ride** on the lead's radio |
+
+## Start Ride (slice 9)
+
+At the trailhead, the coach riding **Lead** clicks the HUD. A lead sees an extra
+step the others don't:
+
+```
+  > Start Ride
+    Change Team
+    Cancel
+```
+
+"Start Ride" clears every teammate's ghost trail and pops **`Red Team Is
+Rolling!`** on all of them, so today's route never inherits yesterday's
+breadcrumbs. Non-lead radios click straight into the team picker as always.
+
+It propagates in every beacon rather than as a one-shot announcement, so a rider
+who was out of range at the trailhead resets the moment they first hear the
+lead — you do not have to be gathered up when you press it. Flash all radios to
+slice 9 to use it: a radio still on slice 8 keeps working normally but will
+ignore the ride start (its trail resets only on a lead re-pick).
 
 ## Flash an L1 (nRF52, USB UF2 only)
 

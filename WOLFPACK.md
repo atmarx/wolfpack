@@ -3,7 +3,13 @@
 Follow-the-leader for mountain bike coaches. LoRa mesh radios that show every
 rider which way the pack went — no phone, no signal, no problem.
 
-> Status: spec'd, building. **Hardware in hand — 3× Wio Tracker L1, bringing up on stock (Phase 1).** This doc is the blueprint.
+> Status: **flying.** Slices 2–9 are shipped on 3× Wio Tracker L1 (Meshtastic
+> v2.7.26 stable): team picker, two-up compass HUD with real meter-scale
+> distances, honest compass, fix-age counters, ghost of the lead, and Start Ride.
+> Flashable UF2 in [`firmware/releases/`](firmware/releases/); what's actually
+> built and why is in [`firmware/INTEGRATION.md`](firmware/INTEGRATION.md).
+> This doc remains the original blueprint — where it and the firmware docs
+> disagree, the firmware docs win.
 
 ## The problem it solves
 

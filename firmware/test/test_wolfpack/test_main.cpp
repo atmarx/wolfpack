@@ -17,7 +17,7 @@ void tearDown(void) {}
 void test_pack_unpack_roundtrip()
 {
     // Philadelphia-ish fix: positive lat, NEGATIVE lon — signs must survive.
-    WolfpackBeacon in = {WP_BEACON_VERSION, WP_GREEN, WP_LEADER, WP_FLAG_HAS_POSITION, 399500000, -751600000};
+    WolfpackBeacon in = {WP_BEACON_VERSION, WP_GREEN, WP_LEADER, WP_FLAG_HAS_POSITION, 399500000, -751600000, 0};
     uint8_t buf[16] = {0};
 
     size_t n = wp_packBeacon(in, buf, sizeof(buf));
@@ -40,7 +40,7 @@ void test_pack_unpack_roundtrip()
 void test_unpack_zeroes_position_without_flag()
 {
     // flags=0 but junk where lat/lon live: the parser must not surface it.
-    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_MIDDLE, 0, 123456789, -987654321};
+    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_MIDDLE, 0, 123456789, -987654321, 0};
     uint8_t buf[16] = {0};
     size_t n = wp_packBeacon(in, buf, sizeof(buf));
     TEST_ASSERT_EQUAL_size_t(WP_BEACON_SIZE, n);
@@ -69,18 +69,22 @@ void test_unpack_accepts_legacy_v2()
 
 void test_pack_rejects_short_buffer()
 {
-    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_SWEEP, 0, 0, 0};
-    uint8_t buf[11] = {0}; // one byte short of a v3 beacon
+    WolfpackBeacon in = {WP_BEACON_VERSION, WP_RED, WP_SWEEP, 0, 0, 0, 0};
+    uint8_t buf[12] = {0}; // one byte short of a v4 beacon
     TEST_ASSERT_EQUAL_size_t(0, wp_packBeacon(in, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_size_t(0, wp_packBeacon(in, buf, 0));
 }
 
 void test_unpack_rejects_short_buffer()
 {
-    // 11 bytes claiming v3: too short for v3, wrong version for v2 -> reject.
+    // 11 bytes claiming v4: too short for v4, wrong version for v3/v2 -> reject.
     uint8_t buf[11] = {WP_BEACON_VERSION, WP_RED, WP_LEADER, WP_FLAG_HAS_POSITION};
     WolfpackBeacon out;
     TEST_ASSERT_FALSE(wp_unpackBeacon(buf, sizeof(buf), out));
+    // 12 bytes claiming v4: exactly a v3's length, but the version says v4 and
+    // the epoch byte isn't there. Must NOT be salvaged as a v3.
+    uint8_t v4short[12] = {WP_BEACON_VERSION, WP_RED, WP_LEADER, WP_FLAG_HAS_POSITION};
+    TEST_ASSERT_FALSE(wp_unpackBeacon(v4short, sizeof(v4short), out));
     // 3 bytes claiming v2: also too short.
     uint8_t v2short[3] = {WP_BEACON_VERSION_V2, WP_RED, WP_LEADER};
     TEST_ASSERT_FALSE(wp_unpackBeacon(v2short, sizeof(v2short), out));
@@ -89,12 +93,84 @@ void test_unpack_rejects_short_buffer()
 void test_unpack_rejects_bad_version()
 {
     WolfpackBeacon out;
-    uint8_t v1[12] = {1, WP_RED, WP_LEADER, 0}; // slice-3 beacon: rejected (palette renumbered)
+    uint8_t v1[13] = {1, WP_RED, WP_LEADER, 0}; // slice-3 beacon: rejected (palette renumbered)
     TEST_ASSERT_FALSE(wp_unpackBeacon(v1, sizeof(v1), out));
-    uint8_t v4[12] = {4, WP_RED, WP_LEADER, 0}; // from the future: rejected
-    TEST_ASSERT_FALSE(wp_unpackBeacon(v4, sizeof(v4), out));
-    uint8_t v0[12] = {0, WP_RED, WP_LEADER, 0};
+    uint8_t v5[13] = {5, WP_RED, WP_LEADER, 0}; // from the future: rejected
+    TEST_ASSERT_FALSE(wp_unpackBeacon(v5, sizeof(v5), out));
+    uint8_t v0[13] = {0, WP_RED, WP_LEADER, 0};
     TEST_ASSERT_FALSE(wp_unpackBeacon(v0, sizeof(v0), out));
+}
+
+// --- slice 9: ride epoch ---
+
+void test_ride_epoch_roundtrip()
+{
+    WolfpackBeacon in = {WP_BEACON_VERSION, WP_VIOLET, WP_LEADER, WP_FLAG_HAS_POSITION, 399500000, -751600000, 200};
+    uint8_t buf[16] = {0};
+    size_t n = wp_packBeacon(in, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_size_t(WP_BEACON_SIZE, n);
+    TEST_ASSERT_EQUAL_size_t(13, n);
+    TEST_ASSERT_EQUAL_HEX8(200, buf[12]);
+
+    WolfpackBeacon out;
+    TEST_ASSERT_TRUE(wp_unpackBeacon(buf, n, out));
+    TEST_ASSERT_EQUAL_UINT8(200, out.rideEpoch);
+    TEST_ASSERT_EQUAL_INT32(399500000, out.lat_i); // epoch must not disturb the fix
+    TEST_ASSERT_EQUAL_INT32(-751600000, out.lon_i);
+}
+
+void test_unpack_accepts_legacy_v3_as_no_ride()
+{
+    // A radio still on slice 8 sends 12 bytes. Position must still land; the
+    // epoch must read as "none" so it never spuriously wipes a trail.
+    uint8_t v3[12] = {WP_BEACON_VERSION_V3, WP_GREEN, WP_LEADER, WP_FLAG_HAS_POSITION};
+    v3[4] = 0x40;
+    v3[5] = 0xE3;
+    v3[6] = 0xD3;
+    v3[7] = 0x17; // 399500096-ish, exact value irrelevant
+    WolfpackBeacon out;
+    TEST_ASSERT_TRUE(wp_unpackBeacon(v3, sizeof(v3), out));
+    TEST_ASSERT_EQUAL_UINT8(WP_BEACON_VERSION_V3, out.version);
+    TEST_ASSERT_EQUAL_UINT8(WP_GREEN, out.color);
+    TEST_ASSERT_EQUAL_UINT8(WP_LEADER, out.role);
+    TEST_ASSERT_EQUAL_UINT8(WP_RIDE_EPOCH_NONE, out.rideEpoch);
+    TEST_ASSERT_NOT_EQUAL(0, out.lat_i);
+}
+
+void test_unpack_v2_has_no_ride_epoch()
+{
+    uint8_t v2[4] = {WP_BEACON_VERSION_V2, WP_BLUE, WP_SWEEP, 0x01};
+    WolfpackBeacon out;
+    TEST_ASSERT_TRUE(wp_unpackBeacon(v2, sizeof(v2), out));
+    TEST_ASSERT_EQUAL_UINT8(WP_RIDE_EPOCH_NONE, out.rideEpoch);
+}
+
+void test_next_ride_epoch_never_zero_never_repeats()
+{
+    // The sentinel and the previous value are both forbidden, at every input.
+    for (uint32_t t = 0; t < 5000; t++) {
+        for (unsigned prev = 0; prev < 256; prev += 17) {
+            uint8_t e = wp_nextRideEpoch(t * 7u, (uint8_t)prev);
+            TEST_ASSERT_NOT_EQUAL(WP_RIDE_EPOCH_NONE, e);
+            TEST_ASSERT_NOT_EQUAL((uint8_t)prev, e);
+        }
+    }
+}
+
+void test_next_ride_epoch_wraps_past_255()
+{
+    // prev=255 forces the +1 to carry into 0 — which is the sentinel, so it must
+    // step again rather than emit "no ride".
+    uint8_t e = wp_nextRideEpoch(255u << 4, 255);
+    TEST_ASSERT_NOT_EQUAL(WP_RIDE_EPOCH_NONE, e);
+    TEST_ASSERT_NOT_EQUAL(255, e);
+}
+
+void test_next_ride_epoch_varies_with_press_time()
+{
+    // Two presses a few seconds apart must not collide — that is the whole
+    // reason the epoch is drawn from millis() instead of a 1,2,3 counter.
+    TEST_ASSERT_NOT_EQUAL(wp_nextRideEpoch(1000, 0), wp_nextRideEpoch(9000, 0));
 }
 
 void test_unpack_rejects_null()
@@ -328,6 +404,12 @@ void setup()
     RUN_TEST(test_unpack_rejects_short_buffer);
     RUN_TEST(test_unpack_rejects_bad_version);
     RUN_TEST(test_unpack_rejects_null);
+    RUN_TEST(test_ride_epoch_roundtrip);
+    RUN_TEST(test_unpack_accepts_legacy_v3_as_no_ride);
+    RUN_TEST(test_unpack_v2_has_no_ride_epoch);
+    RUN_TEST(test_next_ride_epoch_never_zero_never_repeats);
+    RUN_TEST(test_next_ride_epoch_wraps_past_255);
+    RUN_TEST(test_next_ride_epoch_varies_with_press_time);
     RUN_TEST(test_parse_full_grid);
     RUN_TEST(test_parse_legacy_tail);
     RUN_TEST(test_color_role_helpers);

@@ -77,7 +77,12 @@ class WolfpackModule : public SinglePortModule, private concurrency::OSThread
 
 #if HAS_SCREEN
     // --- Slice 4: on-device team picker (color + position) ---
-    void launchTeamPicker(); // entry point: auto on first boot, or on a click
+    // Entry point: auto on first boot, or on a click. A set Lead normally gets the
+    // slice-9 action menu first; pass forceRepick=true when the caller specifically
+    // needs the team re-chosen (the 2x-Lead backstop) rather than offered a ride.
+    void launchTeamPicker(bool forceRepick = false);
+    void showActionPicker(); // slice 9: lead-only "Start Ride / Change Team"
+    void startRide();        // slice 9: stamp a new epoch, clear trail, announce
     void showColorPicker();
     void showPositionPicker(); // uses pendingColor
     // Apply the chosen identity. Returns false if it was refused (same-color Lead
@@ -96,6 +101,9 @@ class WolfpackModule : public SinglePortModule, private concurrency::OSThread
     // banner once the current overlay clears. WANT_* = "open next"; WAIT_* = "up".
     enum PickStep : uint8_t {
         WP_PICK_IDLE = 0,
+        WP_PICK_WANT_ACTION, // slice 9: leads get "Start Ride / Change Team" first
+        WP_PICK_WAIT_ACTION,
+        WP_PICK_WANT_ROLL, // "Start Ride" chosen; fire it once the banner clears
         WP_PICK_WANT_COLOR,
         WP_PICK_WAIT_COLOR,
         WP_PICK_WANT_POSITION,
@@ -119,6 +127,15 @@ class WolfpackModule : public SinglePortModule, private concurrency::OSThread
     // The trail itself is a file-scope static in the .cpp (8 KB — keep it in BSS
     // where the linker's RAM accounting can see it, not on the heap).
     NodeNum ghostLeadNum = 0;
+
+    // --- Slice 9: ride boundaries.
+    // myRideEpoch is what WE stamp on our beacons (only a lead ever sets it).
+    // heardRideEpoch is the last epoch we acted on from our lead — comparing the
+    // two is what makes the reset idempotent, so a repeated beacon can't wipe a
+    // trail twice. Both live in RAM only: a reboot is a new ride anyway, and it
+    // saves a flash write per ride.
+    uint8_t myRideEpoch = WP_RIDE_EPOCH_NONE;
+    uint8_t heardRideEpoch = WP_RIDE_EPOCH_NONE;
 };
 
 extern WolfpackModule *wolfpackModule;

@@ -1,4 +1,4 @@
-# Wolfpack — firmware integration (slices 2–5: broadcast + HUD + picker + position-in-beacon)
+# Wolfpack — firmware integration (slices 2–9: broadcast + HUD + picker + position-in-beacon + honest compass + fix age + ghost + Start Ride)
 
 This `firmware/` subtree holds the **canonical, hand-written** Wolfpack module
 source. It is *not* a fork of the Meshtastic tree — it's the set of files you
@@ -188,6 +188,55 @@ from the chip while moving. Turns now track within a fix or two.
 reports it honestly). New pure functions get 4 more unity tests in
 `test_wolfpack`.
 
+## What slice 9 adds (Start Ride — the ride boundary)
+
+Coach ask, straight from the trailhead: the lead should be able to *start the
+ride* — clear everyone's ghost trail and put "{color} Team Is Rolling!" on every
+screen at once.
+
+The real gap it closes is that the ghost trail had **no concept of a ride**. It
+only reset when a follower re-picked their lead, so yesterday's route was still
+in the ring this morning.
+
+**The wire: a ride epoch, carried continuously.** Beacon goes to **v4, 13 bytes**
+— one byte appended, `rideEpoch`. Hitting Start Ride stamps a fresh epoch that
+then rides in **every** beacon the lead sends, not in a one-shot announcement.
+That distinction is the whole design: a single "we're rolling" packet stepped on
+by a collision in the trees leaves that one follower silently carrying stale
+crumbs all day. Carried continuously, a rider who was out of range at the
+trailhead resets the moment they first hear the lead. Followers compare against
+the last epoch they *acted on*, so the reset is idempotent — no acks, nothing to
+retransmit, and a repeat beacon can't wipe a trail twice.
+
+`wp_nextRideEpoch(millis(), prev)` draws the epoch from the button-press instant
+rather than counting 1, 2, 3. A counter would restart at 1 after a lead reboot,
+and a follower still holding epoch 1 would ignore the new ride entirely — the
+exact failure you'd only find mid-ride. Epoch `0` is the "no ride declared"
+sentinel, so **v3 and v2 peers decode to 0 and never trigger a reset.** Residual
+risk, stated honestly: the epoch is one byte, so a fresh press has a ~1/255
+chance of landing on the value a follower already holds, and that follower keeps
+its trail. Cheap to work around in the field — press it again.
+
+**The UI: no new gesture.** A click already opens the picker, and that deferred
+state machine was hard-won, so nothing in the input path changed. Instead a radio
+whose short_name parses as a *set Lead* gets an action banner first —
+`Start Ride / Change Team / Cancel` — and everyone else drops straight into the
+color picker exactly as before. `startRide()` cannot be called from the banner
+callback (`resetBanner()` would wipe the confirmation banner it opens), so the
+callback records `WP_PICK_WANT_ROLL` and `runOnce()` fires it a tick later —
+the same pattern the color/position steps already use. Start Ride also zeroes
+`lastBeaconMs` so the new epoch hits the air on the next tick instead of waiting
+out the 60 s heartbeat: the coaches are staring at their screens at exactly that
+moment.
+
+One sharp edge worth knowing about: the 2×-Lead backstop also calls
+`launchTeamPicker()`, and on a lead that would now offer "Start Ride" when the
+entire point is that two leads collided and one must re-pick. It passes
+`forceRepick=true` to skip the action menu.
+
+7 new host tests (v4 round-trip, v3/v2 decoding as "no ride", epoch never 0 /
+never repeating / varying with press time).
+
 ## L1 battery: it's an I2C fuel gauge, not the ADC (corrected 2026-06-29)
 
 Earlier builds set `config.power.adc_multiplier_override = 2.54` on boot, on the
@@ -297,7 +346,8 @@ firmware differs, not our module.
 | + Wolfpack slice 5 on v2.7.26 | 90.3% — 735720 B | 44.4% — 110516 B |
 | + Wolfpack slice 6 on v2.7.26 | 90.3% — 735816 B | 44.4% — 110516 B |
 | + Wolfpack slice 7 on v2.7.26 | 90.3% — 736040 B | 44.4% — 110516 B |
-| **+ Wolfpack slice 8 on v2.7.26 (shipping)** | **90.4% — 737016 B** | **47.7% — 118708 B** |
+| + Wolfpack slice 8 on v2.7.26 | 90.4% — 737016 B | 47.7% — 118708 B |
+| **+ Wolfpack slice 9 on v2.7.26 (shipping)** | **90.5% — 737624 B** | **47.7% — 118724 B** |
 
 Cost of slice 4 (the picker): **+1472 bytes flash** over slice 3 (the banner
 overlay is stock — we only add options + callbacks), +48 bytes static RAM (the new

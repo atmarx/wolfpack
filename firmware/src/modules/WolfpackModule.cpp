@@ -105,6 +105,18 @@ int32_t WolfpackModule::runOnce()
     if (pickStep != WP_PICK_IDLE) {
         const bool overlayUp = graphics::NotificationRenderer::isOverlayBannerShowing();
         switch (pickStep) {
+        case WP_PICK_WANT_ACTION:
+            if (!overlayUp) {
+                showActionPicker();
+                pickStep = WP_PICK_WAIT_ACTION;
+            }
+            break;
+        case WP_PICK_WANT_ROLL:
+            if (!overlayUp) {
+                startRide();
+                pickStep = WP_PICK_IDLE;
+            }
+            break;
         case WP_PICK_WANT_COLOR:
             if (!overlayUp) {
                 showColorPicker();
@@ -121,6 +133,7 @@ int32_t WolfpackModule::runOnce()
             if (!overlayUp)
                 pickStep = applyTeamSelection(pendingColor, pendingRole) ? WP_PICK_IDLE : WP_PICK_WANT_COLOR;
             break;
+        case WP_PICK_WAIT_ACTION:
         case WP_PICK_WAIT_COLOR:
         case WP_PICK_WAIT_POSITION:
             // Banner closed without the callback advancing us => cancel / timeout.
@@ -196,8 +209,9 @@ int32_t WolfpackModule::runOnce()
         sendDue = false;
 
     if (sendDue) {
-        WolfpackBeacon beacon = {WP_BEACON_VERSION, (uint8_t)color, (uint8_t)role,
-                                 (uint8_t)(havePos ? WP_FLAG_HAS_POSITION : 0), latI, lonI};
+        WolfpackBeacon beacon = {WP_BEACON_VERSION,          (uint8_t)color, (uint8_t)role,
+                                 (uint8_t)(havePos ? WP_FLAG_HAS_POSITION : 0), latI,           lonI,
+                                 myRideEpoch};
         meshtastic_MeshPacket *p = allocDataPacket();
         p->decoded.payload.size = wp_packBeacon(beacon, p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes));
         // Pack semantics, not mesh semantics: one relay tier is plenty (mid can
@@ -240,6 +254,23 @@ ProcessMessage WolfpackModule::handleReceived(const meshtastic_MeshPacket &mp)
                     wp_ghostReset(wpGhostTrail);
                     ghostLeadNum = mp.from;
                 }
+                // Slice 9: the lead declared a new ride. Comparing against the
+                // epoch we last acted on is what keeps this idempotent — every
+                // beacon carries the epoch, so this fires exactly once per ride
+                // no matter how many we hear or which ones we missed.
+                if (beacon.rideEpoch != WP_RIDE_EPOCH_NONE && beacon.rideEpoch != heardRideEpoch) {
+                    heardRideEpoch = beacon.rideEpoch;
+                    wp_ghostReset(wpGhostTrail);
+                    LOG_INFO("Wolfpack: ride epoch %u from lead 0x%x, trail cleared", (unsigned)beacon.rideEpoch,
+                             mp.from);
+#if HAS_SCREEN
+                    if (screen) {
+                        char msg[40];
+                        snprintf(msg, sizeof(msg), "%s Team Is Rolling!", wp_colorName(myColor));
+                        screen->showSimpleBanner(msg, 4000);
+                    }
+#endif
+                }
                 wp_ghostAppend(wpGhostTrail, beacon.lat_i, beacon.lon_i);
             }
         }
@@ -258,7 +289,10 @@ ProcessMessage WolfpackModule::handleReceived(const meshtastic_MeshPacket &mp)
                 char msg[32];
                 snprintf(msg, sizeof(msg), "2x %s LEAD", wp_colorName(myColor));
                 screen->showSimpleBanner(msg, 5000);
-                launchTeamPicker(); // defer: opens once the warning banner clears
+                // forceRepick: this radio IS a set lead, so the default slice-9
+                // flow would offer "Start Ride" — but the whole point here is
+                // that two leads collided and one of them must re-pick.
+                launchTeamPicker(true); // defer: opens once the warning banner clears
             }
         }
 #endif
@@ -586,14 +620,79 @@ void WolfpackModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, 
 
 // --- Slice 4: on-device team picker ----------------------------------------
 
-void WolfpackModule::launchTeamPicker()
+void WolfpackModule::launchTeamPicker(bool forceRepick)
 {
     if (!screen)
         return;
     // Don't open a banner straight from here — we may be inside a banner callback
-    // or handleReceived(). Just arm the state machine; runOnce() opens the color
-    // picker on the next tick, once any current overlay has cleared.
-    pickStep = WP_PICK_WANT_COLOR;
+    // or handleReceived(). Just arm the state machine; runOnce() opens the first
+    // banner on the next tick, once any current overlay has cleared.
+    //
+    // Slice 9: a coach riding lead has one thing they want from a click mid-ride
+    // ("we're rolling") and one thing they want roughly never ("change my team"),
+    // so a lead gets an action menu first. Everyone else drops straight into the
+    // color picker exactly as before — no new gesture, no new input plumbing.
+    WolfpackColor c;
+    WolfpackRole r;
+    wp_parseColorRole(owner.short_name, c, r);
+    const bool amSetLead = (r == WP_LEADER && c != WP_COLOR_NONE);
+    pickStep = (amSetLead && !forceRepick) ? WP_PICK_WANT_ACTION : WP_PICK_WANT_COLOR;
+    setIntervalFromNow(0);
+}
+
+// Lead-only first stop. Selecting "Start Ride" cannot call startRide() from the
+// callback — NotificationRenderer wipes any banner opened from inside one — so
+// it records WANT_ROLL and runOnce() fires it on a later tick.
+void WolfpackModule::showActionPicker()
+{
+    if (!screen)
+        return;
+    static const char *opts[] = {"Start Ride", "Change Team", "Cancel"};
+
+    graphics::BannerOverlayOptions o;
+    o.message = "Lead";
+    o.optionsArrayPtr = opts;
+    o.optionsCount = 3;
+    o.durationMs = 30000;
+    o.InitialSelected = 0;
+    o.bannerCallback = [this](int idx) {
+        if (idx == 0)
+            pickStep = WP_PICK_WANT_ROLL;
+        else if (idx == 1)
+            pickStep = WP_PICK_WANT_COLOR;
+        else
+            pickStep = WP_PICK_IDLE;
+    };
+    screen->showOverlayBanner(o);
+}
+
+// Declare a new ride: stamp a fresh epoch, drop any trail this radio was
+// holding, and announce it. The epoch propagates in every subsequent beacon, so
+// there is nothing to retransmit and nothing to acknowledge.
+void WolfpackModule::startRide()
+{
+    WolfpackColor c;
+    WolfpackRole r;
+    wp_parseColorRole(owner.short_name, c, r);
+
+    myRideEpoch = wp_nextRideEpoch(millis(), myRideEpoch);
+
+    // A lead records no trail of its own, but this radio may have been a
+    // follower earlier today — start the ride genuinely empty either way.
+    wp_ghostReset(wpGhostTrail);
+    ghostLeadNum = 0;
+    heardRideEpoch = myRideEpoch;
+
+    if (screen) {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "%s Team Is Rolling!", wp_colorName(c));
+        screen->showSimpleBanner(msg, 4000);
+    }
+    LOG_INFO("Wolfpack: ride start, color=%u epoch=%u", (unsigned)c, (unsigned)myRideEpoch);
+
+    // Put the new epoch on the air now rather than waiting out the heartbeat —
+    // the coaches are looking at their screens at exactly this moment.
+    lastBeaconMs = 0;
     setIntervalFromNow(0);
 }
 

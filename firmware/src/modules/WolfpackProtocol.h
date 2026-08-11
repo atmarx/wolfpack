@@ -31,21 +31,35 @@ static const uint8_t WP_NUM_ROLES = 3;
 //
 // A v2 (4-byte, slice-4) beacon is still accepted as color/role-only. v1 is
 // rejected (the color enum was renumbered into rainbow order for v2).
-static const uint8_t WP_BEACON_VERSION = 3;
+// Version 4 (slice 9) appends a one-byte ride epoch. The lead stamps a fresh
+// epoch when a coach hits "Start Ride"; it then rides along in EVERY beacon
+// rather than being announced once. That is deliberate: a one-shot "we're
+// rolling" packet that collides in the trees leaves that follower carrying
+// yesterday's ghost trail all day, with no way to notice. Carried continuously,
+// a rider who was out of range at the trailhead resets the moment they first
+// hear the lead. Epoch 0 means "no ride declared" — legacy v3/v2 peers decode
+// to 0 and so never trigger a reset.
+static const uint8_t WP_BEACON_VERSION = 4;
+static const uint8_t WP_BEACON_VERSION_V3 = 3;
 static const uint8_t WP_BEACON_VERSION_V2 = 2;
-static const size_t WP_BEACON_SIZE = 12;
+static const size_t WP_BEACON_SIZE = 13;
+static const size_t WP_BEACON_SIZE_V3 = 12;
 static const size_t WP_BEACON_SIZE_V2 = 4;
 
 // flags bitfield. bit0 = lat_i/lon_i carry a real fix.
 static const uint8_t WP_FLAG_HAS_POSITION = 0x01;
 
+// Sentinel: no ride has been declared on this team yet.
+static const uint8_t WP_RIDE_EPOCH_NONE = 0;
+
 struct WolfpackBeacon {
     uint8_t version;
-    uint8_t color;  // WolfpackColor
-    uint8_t role;   // WolfpackRole
-    uint8_t flags;  // WP_FLAG_*
-    int32_t lat_i;  // latitude  * 1e7 (Meshtastic native fixed-point), valid iff HAS_POSITION
-    int32_t lon_i;  // longitude * 1e7, valid iff HAS_POSITION
+    uint8_t color;      // WolfpackColor
+    uint8_t role;       // WolfpackRole
+    uint8_t flags;      // WP_FLAG_*
+    int32_t lat_i;      // latitude  * 1e7 (Meshtastic native fixed-point), valid iff HAS_POSITION
+    int32_t lon_i;      // longitude * 1e7, valid iff HAS_POSITION
+    uint8_t rideEpoch;  // slice 9: which ride this is; 0 = none declared
 };
 
 static inline void wp_writeI32LE(uint8_t *p, int32_t v)
@@ -75,24 +89,28 @@ inline size_t wp_packBeacon(const WolfpackBeacon &b, uint8_t *buf, size_t buflen
     buf[3] = b.flags;
     wp_writeI32LE(buf + 4, b.lat_i);
     wp_writeI32LE(buf + 8, b.lon_i);
+    buf[12] = b.rideEpoch;
     return WP_BEACON_SIZE;
 }
 
-// Deserialize a beacon. Accepts v3 (12 bytes) and legacy v2 (4 bytes, parsed as
-// color/role with no position — flags are zeroed since v2's bit0 meant something
-// else). Returns false (leaving out untouched) on null buffer, short buffer, or
-// a version we don't speak.
+// Deserialize a beacon. Accepts v4 (13 bytes), v3 (12 bytes, ride epoch reads as
+// "none"), and legacy v2 (4 bytes, parsed as color/role with no position — flags
+// are zeroed since v2's bit0 meant something else). Returns false (leaving out
+// untouched) on null buffer, short buffer, or a version we don't speak.
 inline bool wp_unpackBeacon(const uint8_t *buf, size_t len, WolfpackBeacon &out)
 {
     if (buf == NULL)
         return false;
-    if (len >= WP_BEACON_SIZE && buf[0] == WP_BEACON_VERSION) {
+    const bool isV4 = (len >= WP_BEACON_SIZE && buf[0] == WP_BEACON_VERSION);
+    const bool isV3 = (len >= WP_BEACON_SIZE_V3 && buf[0] == WP_BEACON_VERSION_V3);
+    if (isV4 || isV3) {
         out.version = buf[0];
         out.color = buf[1];
         out.role = buf[2];
         out.flags = buf[3];
         out.lat_i = wp_readI32LE(buf + 4);
         out.lon_i = wp_readI32LE(buf + 8);
+        out.rideEpoch = isV4 ? buf[12] : WP_RIDE_EPOCH_NONE;
         if (!(out.flags & WP_FLAG_HAS_POSITION)) {
             out.lat_i = 0;
             out.lon_i = 0;
@@ -106,9 +124,26 @@ inline bool wp_unpackBeacon(const uint8_t *buf, size_t len, WolfpackBeacon &out)
         out.flags = 0; // v2 flag bits are not ours; no position on the wire
         out.lat_i = 0;
         out.lon_i = 0;
+        out.rideEpoch = WP_RIDE_EPOCH_NONE;
         return true;
     }
     return false;
+}
+
+// Pick the epoch to stamp on a new ride. `now` is millis() at the button press —
+// a human-chosen instant, so its low bits are effectively arbitrary, which is
+// what we need: a plain 1,2,3… counter would restart at 1 after a lead reboot
+// and a follower still holding epoch 1 would ignore the new ride entirely.
+// Never returns 0 (the "no ride" sentinel) and never repeats `prev`.
+inline uint8_t wp_nextRideEpoch(uint32_t now, uint8_t prev)
+{
+    uint8_t e = (uint8_t)((now >> 4) & 0xFF);
+    // Two forced steps at most: one to clear 0, one to clear `prev`.
+    for (int i = 0; i < 2; i++) {
+        if (e == WP_RIDE_EPOCH_NONE || e == prev)
+            e++;
+    }
+    return e;
 }
 
 // Derive (color, role) from a node short_name. char0 -> color (R/Y/G/B),
