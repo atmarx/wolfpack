@@ -17,18 +17,24 @@
   header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px; }
   .badge { font-size:11px; color:#0c0f14; background:#f5c451; padding:2px 7px;
            border-radius:99px; font-weight:700; }
+  .badge.live { background:#22c55e; }
+  .badge.err  { background:#ff6b6b; }
   .legend { display:flex; gap:10px; margin-left:auto; flex-wrap:wrap; }
   .legend span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; }
   .dot { width:11px; height:11px; border-radius:50%; display:inline-block; }
   footer { padding:8px 12px; background:var(--panel); border-top:1px solid #2a3140;
            display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-  footer button { background:#2b3340; color:var(--ink); border:1px solid #3a4350;
-                  border-radius:7px; padding:6px 12px; cursor:pointer; font-weight:600; }
-  footer button:hover { background:#36404f; }
+  button { background:#2b3340; color:var(--ink); border:1px solid #3a4350;
+           border-radius:7px; padding:6px 12px; cursor:pointer; font-weight:600; }
+  button:hover { background:#36404f; }
+  button:disabled { opacity:.45; cursor:default; }
+  #connect { background:#2f6f4f; border-color:#3d8a63; }
+  #connect:hover { background:#38855e; }
   #scrub { flex:1; min-width:160px; }
   .clock { font-variant-numeric:tabular-nums; color:var(--muted); min-width:118px; }
   #alerts { color:#ff8d8d; font-weight:600; min-width:120px; }
   #spread { color:var(--muted); font-variant-numeric:tabular-nums; }
+  #status { color:var(--muted); font-size:12px; flex-basis:100%; }
   select { background:#2b3340; color:var(--ink); border:1px solid #3a4350; border-radius:7px; padding:5px; }
   .leaflet-tooltip.lbl { background:rgba(20,23,28,.85); border:none; color:#fff;
            font-weight:700; font-size:11px; box-shadow:none; }
@@ -41,6 +47,7 @@
 <div id="app">
   <header>
     <h1>🐺 Wolfpack — team map &amp; timelapse</h1>
+    <button id="connect">Connect radio</button>
     <span class="badge" id="mode">MOCK DATA</span>
     <span class="legend" id="legend"></span>
   </header>
@@ -56,38 +63,63 @@
     </select>
     <span id="alerts"></span>
     <span id="spread"></span>
+    <span id="status"></span>
   </footer>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="wolfpack-protocol.js"></script>
 <script>
 "use strict";
 
 /* ------------------------------------------------------------------ *
- * Wolfpack phone map — Phase A (mock data, no hardware).
- * Demos the real ride shape: all 4 skill teams start at the one parking-lot
- * "base", fan out on different bearings (follow-the-leader, lead→tail strung
- * out), loop their own terrain, and converge back to base. Plus last-known/
- * greyed dots when a team branches out of range, and stop-status pills.
- * The only thing that changes for real data is the DataSource — swap the
- * mock ride for live positions over @meshtastic/js (BLE, Android) or a
- * replay log. Everything here is the stable Position API: id, name,
- * lat/lon, time. None of it needs our firmware module.
+ * Wolfpack phone map.
+ *
+ * Two data sources, one renderer:
+ *   replay(ride)   — a scripted mock ride, no hardware (Phase A).
+ *   connectLive()  — a real radio over Web Bluetooth (Phase B).
+ *
+ * Live mode samples the pack onto the same timeline the replay uses, so
+ * the scrubber works on a live ride too: you get ride history and replay
+ * for free rather than as a second feature.
+ *
+ * The live path reads the WOLFPACK BEACON, not stock position packets.
+ * That matters: Meshtastic truncates native positions to the channel's
+ * position_precision (13 bits ≈ 5.8 km cells) and rate-limits movement
+ * broadcasts to one per 5 minutes. Our beacon is a PRIVATE_APP payload,
+ * which is exempt from truncation, and it carries full-precision lat/lon
+ * every few seconds. So this map sees better data than a generic client.
  * ------------------------------------------------------------------ */
 
-// 4 teams = the 4 skill groups. Color is the handle; skill is the meaning.
-const TEAMS = {
-  R: { name: "Beginner",     color: "#e6394a" },
-  Y: { name: "Intermediate", color: "#f5c451" },
-  G: { name: "Proficient",   color: "#22c55e" },
-  B: { name: "Advanced",     color: "#3b82f6" },
+const WP = window.WolfpackProtocol;
+
+// The firmware's palette (enum WolfpackColor, rainbow order). Live teams
+// come from the beacon, so all six exist whether or not they show up today.
+const WP_PALETTE = {
+  R: "#e6394a", O: "#f97316", Y: "#f5c451",
+  G: "#22c55e", B: "#3b82f6", V: "#a855f7",
+};
+
+// The mock ride uses 4 of those 6 as xram's real skill groups.
+const MOCK_TEAMS = {
+  R: { name: "Beginner",     color: WP_PALETTE.R },
+  Y: { name: "Intermediate", color: WP_PALETTE.Y },
+  G: { name: "Proficient",   color: WP_PALETTE.G },
+  B: { name: "Advanced",     color: WP_PALETTE.B },
 };
 const ROLES = ["Lead", "Mid", "Tail"];
-const ROLE_RADIUS = { Lead: 9, Mid: 7, Tail: 6 };
+const ROLE_RADIUS = { Lead: 9, Mid: 7, Tail: 6, Sweep: 6 };
 const STALE = "#6b7280";
 
-const STEP_SECONDS = 10, STEPS = 180;          // 30-min ride
+const STEP_SECONDS = 10, STEPS = 180;          // 30-min mock ride
 const BASE = [40.0520, -75.2110];              // trailhead / parking lot
+
+// Live tuning. WP_POS_STALE_MS in the firmware is 150 s — match it so the
+// map greys a teammate out at the same moment their own HUD shows "?".
+const LIVE_STEP_SECONDS = 5;
+const LIVE_STALE_SECONDS = 150;
+const LIVE_MAX_STEPS = (4 * 3600) / LIVE_STEP_SECONDS;   // 4 hours is plenty
+const HEARTBEAT_MS = 60000;
 
 // per-skill petal: a loop that LEAVES the base, bulges out on its own
 // bearing, and returns — so all 4 teams fan out from the one parking lot
@@ -102,17 +134,15 @@ const PROFILE = {
 const LAG = { Lead: 0, Mid: 7, Tail: 16 };   // tail trails lead along the petal
 
 // scripted events (step windows) to show off the states
-const ADV_OUT = [60, 120];                     // Advanced branches out of mesh range (far portion of its petal)
+const ADV_OUT = [60, 120];                     // Advanced branches out of mesh range
 const INJURY  = ["R-Tail", 50, 100];           // Beginner tail hurt
 const EQUIP   = ["G-Mid", 90, 140];            // Proficient mid mechanical
 
 // --- helpers ---
 const LNGS = 1.305;  // ~1/cos(40°): keep petals round-ish on the map at this lat
 function petal(base, thetaDeg, Ra, Rb, a) {
-  // closed loop that starts AND ends at `base`, bulging out along bearing theta.
-  // a∈[0,2π]:  a=0 → base,  a=π → far point (~2·Ra out),  a=2π → base again.
   const th = thetaDeg * Math.PI / 180, ct = Math.cos(th), st = Math.sin(th);
-  const out = -Math.cos(a) * Ra, side = Math.sin(a) * Rb;   // along / across bearing
+  const out = -Math.cos(a) * Ra, side = Math.sin(a) * Rb;
   const lat = base[0] + Ra * ct + out * ct - side * st;
   const lng = base[1] + LNGS * (Ra * st + out * st + side * ct);
   return [lat, lng];
@@ -128,37 +158,35 @@ function mmss(sec) {
   const m = Math.floor(sec / 60), s = Math.round(sec % 60);
   return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
 }
+function setStatus(msg) { document.getElementById("status").textContent = msg; }
+function setMode(text, cls) {
+  const el = document.getElementById("mode");
+  el.textContent = text;
+  el.className = "badge" + (cls ? " " + cls : "");
+}
 
 // --- build the mock ride ---
 function buildMockRide() {
   const nodes = [];
   const TWO_PI = 2 * Math.PI;
-  for (const k in TEAMS) {
+  for (const k in MOCK_TEAMS) {
     const pr = PROFILE[k];
     for (const role of ROLES) {
       const id = k + "-" + role;
-      // true position over time: one petal out from base and back, tail
-      // trailing the lead. Clamped to [0,1] so the team gathers AT base at the
-      // start and end — everyone leaves the lot and everyone returns to it.
       const truePos = [];
       for (let i = 0; i < STEPS; i++) {
-        // normalize so even the tail completes its petal by the end — the lead
-        // finishes early and waits at the lot while the tail rolls in.
         let f = (i - LAG[role]) / (STEPS - 1 - LAG.Tail);
         f = f < 0 ? 0 : f > 1 ? 1 : f;
         truePos.push(petal(BASE, pr.dir, pr.Ra, pr.Rb, f * TWO_PI));
       }
-      // heard[] — Advanced team drops off-mesh mid-ride
       const heard = [];
       for (let i = 0; i < STEPS; i++) heard.push(!(k === "B" && i >= ADV_OUT[0] && i < ADV_OUT[1]));
-      // status[]
       const status = [];
       for (let i = 0; i < STEPS; i++) {
         if (id === INJURY[0] && i >= INJURY[1] && i < INJURY[2]) status.push("injury");
         else if (id === EQUIP[0] && i >= EQUIP[1] && i < EQUIP[2]) status.push("equipment");
         else status.push(null);
       }
-      // shown position + age from last-heard (the "last-known" behaviour)
       const shown = [], age = [], lastHeard = [];
       let li = 0;
       for (let i = 0; i < STEPS; i++) {
@@ -168,11 +196,11 @@ function buildMockRide() {
         age.push((i - li) * STEP_SECONDS);
       }
       nodes.push({ id, short: k + "-" + role, team: k, role,
-                   skill: TEAMS[k].name, color: TEAMS[k].color,
+                   skill: MOCK_TEAMS[k].name, color: MOCK_TEAMS[k].color,
                    truePos, shown, age, status, lastHeard });
     }
   }
-  return { nodes };
+  return { nodes, teams: MOCK_TEAMS, steps: STEPS, stepSeconds: STEP_SECONDS, base: BASE };
 }
 
 // --- map ---
@@ -182,120 +210,346 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
 }).addTo(map);
 
 let RIDE = null;
-const layers = {};
+let layers = {};
+let baseMarker = null;
+let followPack = true;   // live: keep the pack in frame until the user pans
 
 function buildLayers() {
   Object.values(layers).forEach(l => { l.marker.remove(); l.trail.remove(); });
-  for (const k in layers) delete layers[k];
-  const bounds = [BASE];
+  layers = {};
+  if (baseMarker) { baseMarker.remove(); baseMarker = null; }
 
-  // trailhead / base anchor
-  L.marker(BASE, { icon: L.divIcon({ className: "", html:
-      '<div class="basepin">🏁 Base</div>', iconSize: [54, 18], iconAnchor: [27, 9] }) })
-    .addTo(map);
+  const bounds = [];
+  if (RIDE.base) {
+    bounds.push(RIDE.base);
+    baseMarker = L.marker(RIDE.base, { icon: L.divIcon({ className: "", html:
+        '<div class="basepin">🏁 Base</div>', iconSize: [54, 18], iconAnchor: [27, 9] }) })
+      .addTo(map);
+  }
 
   RIDE.nodes.forEach(node => {
     const trail = L.polyline([], { color: node.color, weight: 2.5, opacity: 0.5 }).addTo(map);
-    const marker = L.circleMarker(node.shown[0], {
-      radius: ROLE_RADIUS[node.role], color: "#0c0f14", weight: 1.4,
+    const marker = L.circleMarker(node.shown[node.shown.length - 1] || RIDE.base || [0, 0], {
+      radius: ROLE_RADIUS[node.role] || 7, color: "#0c0f14", weight: 1.4,
       fillColor: node.color, fillOpacity: 0.9,
     }).addTo(map);
     if (node.role === "Lead") {
-      marker.bindTooltip(node.skill, { permanent: true, direction: "right",
-                                       className: "lbl", offset: [7, 0] });
+      marker.bindTooltip(node.skill || node.short, { permanent: true, direction: "right",
+                                                     className: "lbl", offset: [7, 0] });
     } else {
       marker.bindTooltip(node.short, { direction: "top", className: "lbl" });
     }
     layers[node.id] = { marker, trail };
-    node.truePos.forEach(p => bounds.push(p));
+    node.truePos.forEach(p => { if (p) bounds.push(p); });
   });
-  map.fitBounds(bounds, { padding: [40, 40] });
+  if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
 }
 
 function renderAt(i) {
-  if (!RIDE) return;
+  if (!RIDE || !RIDE.nodes.length) return;
   const alerts = [];
+  const live = [];
   RIDE.nodes.forEach(node => {
     const l = layers[node.id];
+    if (!l) return;
     const shown = node.shown[i], age = node.age[i], st = node.status[i], heard = age === 0;
+    if (!shown) { l.marker.setStyle({ fillOpacity: 0, opacity: 0 }); return; }
     l.marker.setLatLng(shown);
-    // styling: status ring > stale > normal
     let stroke = "#0c0f14", weight = 1.4;
     if (st === "injury") { stroke = "#ff3b3b"; weight = 3; }
     else if (st === "equipment") { stroke = "#f5c451"; weight = 2.6; }
     else if (!heard) { stroke = "#9aa4b2"; weight = 1; }
     l.marker.setStyle({
+      opacity: 1,
       fillColor: heard ? node.color : STALE, color: stroke, weight,
       fillOpacity: heard ? (node.role === "Lead" ? 0.95 : node.role === "Mid" ? 0.8 : 0.6) : 0.35,
     });
-    l.trail.setLatLngs(node.truePos.slice(0, node.lastHeard[i] + 1));
+    const upto = node.truePos.slice(0, node.lastHeard[i] + 1).filter(Boolean);
+    l.trail.setLatLngs(upto);
     l.trail.setStyle({ opacity: heard ? 0.5 : 0.18 });
     if (node.role !== "Lead") {
-      let tip = node.short + " · " + node.skill + " " + node.role;
+      let tip = node.short + (node.skill ? " · " + node.skill : "") + " " + node.role;
       if (st) tip += "  ⚠ " + st;
       if (age > 0) tip += "  (" + age + "s ago)";
       l.marker.setTooltipContent(tip);
     }
-    if (st) alerts.push("⚠ " + node.skill + "-" + node.role + " " + st.toUpperCase());
+    if (st) alerts.push("⚠ " + (node.skill || node.short) + " " + st.toUpperCase());
+    live.push(shown);
   });
 
-  // footer: spread per in-range team, or out-of-range note
+  // footer: spread per team (lead → sweep), or an out-of-range note
   const spreads = [];
-  for (const k in TEAMS) {
+  for (const k in RIDE.teams) {
     const lead = RIDE.nodes.find(n => n.team === k && n.role === "Lead");
-    const tail = RIDE.nodes.find(n => n.team === k && n.role === "Tail");
-    if (!lead || !tail) continue;
+    const back = RIDE.nodes.find(n => n.team === k && (n.role === "Tail" || n.role === "Sweep"));
+    if (!lead || !back || !lead.shown[i] || !back.shown[i]) continue;
     const stale = RIDE.nodes.some(n => n.team === k && n.age[i] > 0);
-    spreads.push(TEAMS[k].name + " " + (stale ? "⚠out-of-range" : haversine(lead.shown[i], tail.shown[i]) + "m"));
+    spreads.push(RIDE.teams[k].name + " " +
+                 (stale ? "⚠out-of-range" : haversine(lead.shown[i], back.shown[i]) + "m"));
   }
   document.getElementById("clock").textContent =
-    mmss(i * STEP_SECONDS) + " / " + mmss((STEPS - 1) * STEP_SECONDS);
+    mmss(i * RIDE.stepSeconds) + " / " + mmss((RIDE.steps - 1) * RIDE.stepSeconds);
   document.getElementById("alerts").textContent = alerts.join("   ");
   document.getElementById("spread").textContent = spreads.join("  ·  ");
+
+  if (RIDE.isLive && followPack && live.length) {
+    map.fitBounds(L.latLngBounds(live).pad(0.35), { animate: false, maxZoom: 17 });
+  }
 }
 
 function buildLegend() {
-  document.getElementById("legend").innerHTML = Object.keys(TEAMS).map(p =>
-    `<span><i class="dot" style="background:${TEAMS[p].color}"></i>${TEAMS[p].name}</span>`
+  const teams = RIDE ? RIDE.teams : MOCK_TEAMS;
+  document.getElementById("legend").innerHTML = Object.keys(teams).map(p =>
+    `<span><i class="dot" style="background:${teams[p].color}"></i>${teams[p].name}</span>`
   ).join("") + `<span><i class="dot" style="background:${STALE}"></i>out-of-range</span>`;
 }
 
 // --- timeline ---
 const scrub = document.getElementById("scrub"), playBtn = document.getElementById("play");
-let timer = null;
-scrub.addEventListener("input", () => renderAt(+scrub.value));
+let timer = null, pinnedToNow = true;
+scrub.addEventListener("input", () => {
+  pinnedToNow = RIDE && +scrub.value >= RIDE.steps - 1;
+  renderAt(+scrub.value);
+});
 playBtn.addEventListener("click", () => timer ? stop() : play());
 function play() {
   playBtn.textContent = "⏸ Pause";
   const inc = +document.getElementById("speed").value;
   timer = setInterval(() => {
     let v = +scrub.value + inc;
-    if (v >= STEPS) v = 0;
+    if (v >= RIDE.steps) v = 0;
     scrub.value = v; renderAt(v);
   }, 200);
 }
 function stop() { clearInterval(timer); timer = null; playBtn.textContent = "▶ Play"; }
+map.on("dragstart zoomstart", () => { followPack = false; });
+
+// ================================================================== //
+// LIVE: Web Bluetooth -> Wolfpack beacons -> the same timeline
+// ================================================================== //
+
+const Live = {
+  device: null, gatt: null, toRadio: null, fromRadio: null, fromNum: null,
+  peers: new Map(),        // nodeNum -> peer record
+  startedAt: 0,
+  timer: null, heartbeat: null,
+  draining: false,
+
+  reset() {
+    this.peers.clear();
+    this.startedAt = Date.now();
+    RIDE = { nodes: [], teams: {}, steps: 1, stepSeconds: LIVE_STEP_SECONDS,
+             base: null, isLive: true };
+  },
+
+  /** A beacon landed. Upsert the peer and remember the fix. */
+  onBeacon(nodeNum, beacon, nowMs) {
+    const code = WP.shortCode(beacon);
+    let peer = this.peers.get(nodeNum);
+    if (!peer) {
+      peer = { id: "n" + nodeNum, num: nodeNum, short: code,
+               team: WP.COLOR_LETTERS[beacon.color] || "?",
+               role: WP.roleName(beacon.role),
+               color: WP_PALETTE[WP.COLOR_LETTERS[beacon.color]] || "#9aa4b2",
+               lastPos: null, lastPosMs: 0, rideEpoch: beacon.rideEpoch, isNew: true };
+      this.peers.set(nodeNum, peer);
+    }
+    // A radio can be re-picked mid-ride; follow it rather than stranding a ghost.
+    peer.short = code;
+    peer.team = WP.COLOR_LETTERS[beacon.color] || "?";
+    peer.role = WP.roleName(beacon.role);
+    peer.color = WP_PALETTE[peer.team] || "#9aa4b2";
+
+    // Start Ride: the lead stamped a new epoch. Drop the trail so today's
+    // map doesn't inherit the last ride, exactly as the radios do.
+    if (beacon.rideEpoch !== WP.BEACON.RIDE_EPOCH_NONE && beacon.rideEpoch !== peer.rideEpoch) {
+      peer.rideEpoch = beacon.rideEpoch;
+      if (beacon.role === 1) this.clearTrails();
+    }
+    if (beacon.hasPosition) {
+      peer.lastPos = [beacon.lat, beacon.lon];
+      peer.lastPosMs = nowMs;
+      if (!RIDE.base) RIDE.base = peer.lastPos;   // first fix seen = the trailhead
+    }
+  },
+
+  clearTrails() {
+    RIDE.nodes.forEach(n => {
+      n.truePos = n.truePos.map(() => null);
+      n.shown = n.shown.map(() => null);
+    });
+    setStatus("Ride started — trails cleared.");
+  },
+
+  /** Snapshot every peer onto the shared timeline. Runs every LIVE_STEP_SECONDS. */
+  sample() {
+    if (!RIDE || !RIDE.isLive) return;
+    const now = Date.now();
+    const i = RIDE.nodes.length ? RIDE.nodes[0].shown.length : 0;
+    if (i >= LIVE_MAX_STEPS) return;
+
+    let structureChanged = false;
+    for (const peer of this.peers.values()) {
+      let node = RIDE.nodes.find(n => n.id === peer.id);
+      if (!node) {
+        // Backfill so every node's arrays stay the same length as the timeline.
+        node = { id: peer.id, short: peer.short, team: peer.team, role: peer.role,
+                 skill: null, color: peer.color,
+                 truePos: new Array(i).fill(null), shown: new Array(i).fill(null),
+                 age: new Array(i).fill(0), status: new Array(i).fill(null),
+                 lastHeard: new Array(i).fill(0) };
+        RIDE.nodes.push(node);
+        structureChanged = true;
+      }
+      node.short = peer.short; node.role = peer.role;
+      node.team = peer.team; node.color = peer.color;
+      if (!RIDE.teams[peer.team]) {
+        RIDE.teams[peer.team] = { name: WP.colorName(WP.COLOR_LETTERS.indexOf(peer.team)),
+                                  color: peer.color };
+        structureChanged = true;
+      }
+
+      const ageSec = peer.lastPosMs ? Math.round((now - peer.lastPosMs) / 1000) : 9999;
+      const fresh = peer.lastPos && ageSec <= LIVE_STALE_SECONDS;
+      node.truePos.push(fresh ? peer.lastPos : null);
+      node.shown.push(peer.lastPos);           // last known, even when stale
+      node.age.push(fresh ? 0 : ageSec);
+      node.status.push(null);
+      node.lastHeard.push(node.truePos.length - 1);
+    }
+    // Any node that didn't get a row this tick (shouldn't happen, but keep
+    // the arrays rectangular so renderAt can't read past an end).
+    const len = Math.max(...RIDE.nodes.map(n => n.shown.length), i + 1);
+    RIDE.nodes.forEach(n => {
+      while (n.shown.length < len) {
+        n.truePos.push(null); n.shown.push(n.shown[n.shown.length - 1] || null);
+        n.age.push(9999); n.status.push(null); n.lastHeard.push(n.truePos.length - 1);
+      }
+      // lastHeard must point at the newest non-null fix, for the trail slice.
+      let last = 0;
+      for (let k = 0; k < n.truePos.length; k++) if (n.truePos[k]) last = k;
+      n.lastHeard[n.lastHeard.length - 1] = last;
+    });
+
+    RIDE.steps = len;
+    if (structureChanged) { buildLayers(); buildLegend(); }
+    scrub.max = Math.max(0, RIDE.steps - 1);
+    if (pinnedToNow) { scrub.value = RIDE.steps - 1; renderAt(RIDE.steps - 1); }
+  },
+
+  /** Drain every queued FromRadio frame. One GATT read = one frame. */
+  async drain() {
+    if (this.draining) return;
+    this.draining = true;
+    try {
+      for (let guard = 0; guard < 256; guard++) {
+        const view = await this.fromRadio.readValue();
+        if (!view || view.byteLength === 0) break;
+        const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+        let pkt = null;
+        try { pkt = WP.decodeFromRadio(bytes); }
+        catch (e) { continue; }          // a malformed frame is not fatal
+        if (!pkt) continue;
+        if (pkt.encrypted) {
+          setStatus("Heard an encrypted packet — this radio isn't on the pack's channel/PSK.");
+          continue;
+        }
+        if (pkt.portnum !== WP.PORT_PRIVATE_APP) continue;
+        const beacon = WP.parseBeacon(pkt.payload);
+        if (beacon) this.onBeacon(pkt.from, beacon, Date.now());
+      }
+    } catch (e) {
+      setStatus("Read failed: " + e.message);
+    } finally {
+      this.draining = false;
+    }
+  },
+
+  async connect() {
+    if (!navigator.bluetooth) {
+      throw new Error("This browser has no Web Bluetooth. Use Chrome on Android — " +
+                      "Safari/iOS does not support it.");
+    }
+    if (!window.isSecureContext) {
+      throw new Error("Web Bluetooth needs HTTPS (or localhost). Serve this page over TLS.");
+    }
+
+    setStatus("Choose your radio…");
+    this.device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [WP.BLE.SERVICE] }],
+      optionalServices: [WP.BLE.SERVICE],
+    });
+    this.device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
+
+    setStatus("Connecting…");
+    this.gatt = await this.device.gatt.connect();
+    const svc = await this.gatt.getPrimaryService(WP.BLE.SERVICE);
+    this.toRadio = await svc.getCharacteristic(WP.BLE.TORADIO);
+    this.fromRadio = await svc.getCharacteristic(WP.BLE.FROMRADIO);
+    this.fromNum = await svc.getCharacteristic(WP.BLE.FROMNUM);
+
+    this.reset();
+
+    // Handshake: ask for the config dump. The radio won't stream packets
+    // until a client has identified itself this way.
+    setStatus("Handshaking…");
+    await this.toRadio.writeValue(WP.encodeWantConfig(Math.floor(Math.random() * 0x7fffffff)));
+    await this.drain();   // swallow the config dump; beacons follow
+
+    // fromNum notifies whenever there's something to read.
+    await this.fromNum.startNotifications();
+    this.fromNum.addEventListener("characteristicvaluechanged", () => this.drain());
+
+    // Belt and braces: some stacks drop notifications, and an idle client
+    // gets dropped by the radio, so poll and heartbeat as well.
+    this.timer = setInterval(() => { this.drain(); this.sample(); }, LIVE_STEP_SECONDS * 1000);
+    this.heartbeat = setInterval(() => {
+      this.toRadio.writeValue(WP.encodeHeartbeat()).catch(() => {});
+    }, HEARTBEAT_MS);
+
+    followPack = true; pinnedToNow = true;
+    setMode("LIVE", "live");
+    setStatus("Connected to " + (this.device.name || "radio") +
+              ". Waiting for beacons — a teammate appears on their first fix.");
+    buildLegend();
+  },
+
+  onDisconnect() {
+    clearInterval(this.timer); clearInterval(this.heartbeat);
+    this.timer = this.heartbeat = null;
+    setMode("DISCONNECTED", "err");
+    setStatus("Radio disconnected. The ride so far is still on the timeline — " +
+              "press Connect to resume.");
+    document.getElementById("connect").disabled = false;
+  },
+};
 
 // --- DATA SOURCE: the one seam between mock and real ---
 const DataSource = {
   replay(ride) {
     RIDE = ride;
-    scrub.max = STEPS - 1; scrub.value = 0;
+    scrub.max = RIDE.steps - 1; scrub.value = 0;
     buildLayers(); buildLegend(); renderAt(0);
   },
-  // TODO (Phase B, when hardware lands — Android / Web Bluetooth confirmed):
-  //   import { Client } from "https://cdn.jsdelivr.net/npm/@meshtastic/js/+esm";
-  //   const conn = await new Client().createBleConnection(); ...
-  //   conn.events.onPositionPacket.subscribe(p => store.appendFix(nodeId,[lat,lng],p.data.time));
-  // Match p.from to a node by short-name prefix; team color = prefix (R/Y/G/B);
-  // stale/last-known + status pills are already wired — live data just feeds them.
   async connectLive() {
-    document.getElementById("mode").textContent = "LIVE (not wired yet)";
-    throw new Error("connectLive() is stubbed — wire @meshtastic/js when hardware lands.");
+    const btn = document.getElementById("connect");
+    btn.disabled = true;
+    try {
+      stop();
+      await Live.connect();
+    } catch (e) {
+      // A cancelled chooser is a user choice, not an error worth shouting about.
+      if (e && e.name === "NotFoundError") setStatus("No radio picked.");
+      else { setMode("ERROR", "err"); setStatus(e.message || String(e)); }
+      btn.disabled = false;
+    }
   },
 };
 
+document.getElementById("connect").addEventListener("click", () => DataSource.connectLive());
+
 DataSource.replay(buildMockRide());
+setStatus("Showing a mock ride. Press “Connect radio” to go live (Chrome on Android, over HTTPS).");
 </script>
 </body>
 </html>
