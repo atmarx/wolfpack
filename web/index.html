@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Wolfpack — team map &amp; timelapse</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
 <style>
   :root { --bg:#14171c; --panel:#1d222b; --ink:#e7ecf3; --muted:#8b94a3; }
   * { box-sizing:border-box; }
@@ -35,6 +35,7 @@
   #alerts { color:#ff8d8d; font-weight:600; min-width:120px; }
   #spread { color:var(--muted); font-variant-numeric:tabular-nums; }
   #status { color:var(--muted); font-size:12px; flex-basis:100%; }
+  #offline { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
   select { background:#2b3340; color:var(--ink); border:1px solid #3a4350; border-radius:7px; padding:5px; }
   .leaflet-tooltip.lbl { background:rgba(20,23,28,.85); border:none; color:#fff;
            font-weight:700; font-size:11px; box-shadow:none; }
@@ -49,6 +50,8 @@
     <h1>🐺 Wolfpack — team map &amp; timelapse</h1>
     <button id="connect">Connect radio</button>
     <span class="badge" id="mode">MOCK DATA</span>
+    <button id="saveMap" title="Download the map tiles for the area on screen, so the basemap works on the trail with no signal">⬇ Save map offline</button>
+    <span id="offline"></span>
     <span class="legend" id="legend"></span>
   </header>
   <div id="map"></div>
@@ -67,8 +70,9 @@
   </footer>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="vendor/leaflet/leaflet.js"></script>
 <script src="wolfpack-protocol.js"></script>
+<script src="wolfpack-offline.js"></script>
 <script>
 "use strict";
 
@@ -205,8 +209,12 @@ function buildMockRide() {
 
 // --- map ---
 const map = L.map("map", { zoomControl: true });
+// Same URL as WolfpackOffline.TILE_URL (test-offline.js holds them together).
+// crossOrigin so tiles are fetched CORS: the service worker can then check
+// and cache them, rather than storing opaque blobs it can't inspect.
 L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
   maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap © CARTO",
+  crossOrigin: true,
 }).addTo(map);
 
 let RIDE = null;
@@ -549,6 +557,13 @@ const DataSource = {
 document.getElementById("connect").addEventListener("click", () => DataSource.connectLive());
 
 DataSource.replay(buildMockRide());
+
+// Offline basemap: service worker + "Save map offline". Absent in the node
+// tests (they stub the DOM and never load wolfpack-offline.js).
+if (window.WolfpackOffline) {
+  window.WolfpackOffline.attach(map, document.getElementById("saveMap"),
+                                document.getElementById("offline"));
+}
 setStatus("Showing a mock ride. Press “Connect radio” to go live (Chrome on Android, over HTTPS).");
 </script>
 </body>

@@ -46,20 +46,25 @@ It also means the map understands things a generic client can't: team colour and
 role come from the beacon, and **Start Ride** clears the on-screen trails at the
 same moment it clears them on the radios.
 
-## ⚠ Map tiles need a network. The trail probably doesn't have one.
+## Offline: the map works with no signal
 
-This is the one that will bite you in the field. The **positions** arrive over
-Bluetooth and need no internet at all — but the **basemap tiles** are fetched
-from a CDN. On a wooded trail with no cell service you'll get live dots on a
-blank grey background.
+The page is a service worker app. After one visit with a connection, the page,
+its scripts and Leaflet (vendored under `vendor/`, nothing from a CDN) load with
+no network at all.
 
-Until offline tiles are packaged, the mitigation is to **warm the cache before
-you leave**: open the map while you still have signal and pan/zoom around the
-practice area at the zoom levels you'll use. Those tiles stay in the browser
-cache for the ride. It works, but it's a chore and it's fragile.
+The **basemap** is the part that needs planning. Press **⬇ Save map offline**
+while you still have signal, with the practice area on screen: it downloads
+every tile for that view from a few zoom levels out down to z18 (capped at 3000
+tiles), and the worker serves them from cache first after that. Tiles you simply
+panned past with signal are kept too. Positions always arrive over Bluetooth and
+never needed a network.
 
-The real fix is a service worker precaching a tile pack for your trail systems.
-That's the next thing worth building here.
+Needs HTTPS (or `localhost`) — same rule as Web Bluetooth.
+
+⚠ **The current tile source is watermarked.** CARTO now stamps "API KEY
+REQUIRED" across keyless basemap tiles. The map is still readable underneath,
+but the tile source has to change — and the ones that allow bulk offline
+download are the ones we host ourselves.
 
 ## Tests
 
@@ -68,6 +73,7 @@ The wire decoding and the live timeline logic are tested off-hardware:
 ```bash
 node web/test-protocol.js   # protobuf + beacon decoding (88 checks)
 node web/test-live.js       # live peer tracking and timeline (74 checks)
+node web/test-offline.js    # tile math + page/worker wiring (88 checks)
 ```
 
 `test-protocol.js` writes its own encoders, independently of the decoder and
@@ -84,7 +90,6 @@ people join late, drop out of range, and come back.
 - **Ride storage.** Everything lives in the tab. Close it and the ride is gone.
   A Strava-shaped history needs the phone to log the session somewhere — that's
   the backend conversation, and the bigger half of the work.
-- **Offline tiles.** See above.
 - **Status pills** (injury / mechanical). The renderer supports them and the mock
   demonstrates them; nothing on the wire sets them yet.
 
@@ -96,3 +101,7 @@ people join late, drop out of range, and come back.
 | `wolfpack-protocol.js` | Pure decoding: Meshtastic BLE UUIDs, a minimal protobuf reader, and the Wolfpack beacon parser. No DOM, no Bluetooth. |
 | `test-protocol.js` | Decoder tests. |
 | `test-live.js` | Live-path tests. |
+| `wolfpack-offline.js` | Tile math and "Save map offline". Shared with the service worker. |
+| `sw.js` | Service worker: app shell and saved tiles from cache. |
+| `test-offline.js` | Offline tests. |
+| `vendor/leaflet/` | Leaflet 1.9.4, byte-identical to the npm release (BSD-2-Clause). |
