@@ -30,7 +30,20 @@ lead — you do not have to be gathered up when you press it. Flash all radios t
 slice 9 to use it: a radio still on slice 8 keeps working normally but will
 ignore the ride start (its trail resets only on a lead re-pick).
 
-## Flash an L1 (nRF52, USB UF2 only)
+## Flash the whole fleet
+
+```bash
+firmware/reimage-fleet.sh          # newest UF2 here, 3 radios
+```
+
+One radio at a time: it resets each into the bootloader over USB (no
+double-tap), copies the image on, waits for it to boot back up, then asks for
+the next. Radios are tracked by USB serial, so it won't call the job done until
+three *different* radios have been flashed. `-n 4` for a bigger fleet. Resetting
+into the bootloader needs the serial port — if you're not in `dialout` it asks
+for sudo once, or falls back to telling you to double-tap RESET.
+
+## Flash an L1 by hand (nRF52, USB UF2 only)
 
 1. Data USB-C in, then **double-tap RESET** → a USB drive named **`Tracker L1`** mounts.
 2. Copy the `.uf2` onto that drive → it flashes and reboots itself.
