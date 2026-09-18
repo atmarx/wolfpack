@@ -14,11 +14,17 @@ radio ─LoRa─ radio ─BLE─ coach's phone ─cell─ ride relay ─ parent'
 
 ## The ride code is a night
 
-A ride code is generated at the trailhead and stands for one evening's practice.
+Anyone on the site types in a date and gets a code for it. That's the whole
+creation flow: no account, no approval, no list of rides anywhere. You make a
+code for Wednesday's practice and text it to your group.
 
-- A coach opens the map and taps **I'm riding**. The first coach of the night
-  creates the code; everyone else enters it. Their phone starts relaying every
-  beacon its radio hears, and (opt-in, separately) its own GPS.
+The code is **random and tied to a date** — never derived from one. A code you
+could compute from "Pennypack, Sept 17" would be a code a stranger could
+compute too.
+
+- A coach opens the map and taps **I'm riding**, then enters the code. Their
+  phone starts relaying every beacon its radio hears, and (opt-in, separately)
+  its own GPS.
 - A parent opens the share link, or taps **I'm watching** and enters the code.
   They see the dots. Nothing they do can put anything on the map.
 - **Afterwards the code still works.** It opens that night's ride in the
@@ -50,8 +56,11 @@ Less than you'd think, and this is deliberate.
   payload. The relay stores those. **No names.** On the wire a rider is `R-Mid`,
   not a child's name, so the server never holds one.
 - **Coach radios and coach phones only.** No rider's phone runs the relay.
-- Positions live in the ride and die with it: **30 days by default**, then
-  deleted. Any coach can delete a ride immediately from the map.
+- Positions live in the ride and die with it: **7 days**, then deleted. Any
+  coach can delete a ride immediately from the map.
+- **Export** before it goes: GPX per rider (drops straight into Strava or a
+  Garmin), GeoJSON for the whole ride. The night is yours to keep; the server is
+  not where it lives.
 - Self-hosted next to the map. No third party, no analytics, no ad SDK — nothing
   on the page that we didn't put there.
 
@@ -77,6 +86,27 @@ of the night's samples.
 SQLite file. Behind the same origin as the map so there is no CORS and no second
 hostname. Rate-limited per relay, because a coach's phone that gets stuck in a
 loop shouldn't fill the disk.
+
+## What it must never claim
+
+**A radio going quiet is a radio problem, not a person problem.** Batteries die.
+Antennas get knocked loose on a switchback. A phone leaves the foreground and
+the GPS stops. Every one of those looks exactly like a rider who stopped
+beaconing, and none of them means anyone is in trouble.
+
+So the relay reports what it knows and never what it infers:
+
+- ✅ "last heard 6m ago" — the fix-age counter the radios already show.
+- ❌ "everyone's accounted for", a roll call, a missing-rider alert, a count of
+  who's "safe".
+
+xram, 2026-09-16: *"we have a long ways of trust to build before we think of
+these radios as indicating 'everyone's accounted for' — batteries die, antennae
+get knocked loose. my walkie talkie died tonight — i didn't."*
+
+This is the same rule as the honest compass in slice 6, where `?` means "I've
+lost them" and never "you stopped moving." A coach who learns the map overstates
+things once will not trust it when it matters. **Do not build the roll call.**
 
 ## What it does not do
 
