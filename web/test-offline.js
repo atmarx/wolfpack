@@ -2,12 +2,16 @@
  *
  *   node web/test-offline.js
  *
- * The tile math is checked against an independently written formula (the
- * asinh form of Web Mercator, not the log/tan form the module uses), and the
- * wiring checks guard the two mistakes that would only show up on a trail:
- * the page and the worker disagreeing about tile URLs, and a precache entry
- * that 404s — cache.addAll() is all-or-nothing, so one missing file means
- * the service worker never installs and nothing works offline at all.
+ * The interesting half is Range handling. The map renderer reads the
+ * basemap file in pieces, and once the file is in the cache there is no
+ * server left to answer a Range request — the worker has to slice the
+ * cached copy itself. Get that wrong and the map works online and shows
+ * nothing on the trail, which is the exact failure this whole feature
+ * exists to prevent.
+ *
+ * The wiring checks guard the other two: a precache entry that 404s (
+ * cache.addAll is all-or-nothing, so one missing file and the worker never
+ * installs), and the page and worker disagreeing about where the basemap is.
  */
 "use strict";
 const fs = require("fs");
@@ -20,117 +24,105 @@ function ok(cond, msg) {
   if (!cond) { failures++; console.log(`FAIL [${current}] ${msg}`); }
 }
 function eq(a, b, msg) { ok(a === b, `${msg}: got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`); }
-function test(name, fn) { current = name; fn(); }
+function test(name, fn) { current = name; return fn(); }
 
-// Independent reference: y from asinh(tan φ).
-function refX(lon, z) { return Math.floor((lon + 180) / 360 * 2 ** z); }
-function refY(lat, z) {
-  const r = lat * Math.PI / 180;
-  return Math.floor((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2 * 2 ** z);
+test("isBasemap recognises the file, and nothing else", () => {
+  ok(OFF.isBasemap("https://wolfpack.example/" + OFF.BASEMAP_PATH), "absolute");
+  ok(OFF.isBasemap(OFF.BASEMAP_PATH), "relative");
+  ok(OFF.isBasemap("https://wolfpack.example/sub/dir/" + OFF.BASEMAP_PATH), "under a subpath");
+  ok(!OFF.isBasemap("https://wolfpack.example/index.html"), "the page");
+  ok(!OFF.isBasemap("https://wolfpack.example/basemap/other.pmtiles"), "some other archive");
+  ok(!OFF.isBasemap("https://wolfpack.example/wolfpack-protocol.js"), "a script");
+});
+
+test("parseRange handles what a byte-range reader actually sends", () => {
+  const size = 1000;
+  const r = (h) => OFF.parseRange(h, size);
+  eq(JSON.stringify(r("bytes=0-99")), JSON.stringify({ start: 0, end: 99 }), "closed range");
+  eq(JSON.stringify(r("bytes=500-")), JSON.stringify({ start: 500, end: 999 }), "open-ended");
+  eq(JSON.stringify(r("bytes=-128")), JSON.stringify({ start: 872, end: 999 }), "suffix");
+  eq(JSON.stringify(r(" bytes=0-0 ")), JSON.stringify({ start: 0, end: 0 }), "single byte, padded");
+  eq(JSON.stringify(r("bytes=900-99999")), JSON.stringify({ start: 900, end: 999 }), "clamped to eof");
+  eq(r(null), null, "no header");
+  eq(r("bytes=1000-1200"), null, "starts past eof");
+  eq(r("bytes=200-100"), null, "backwards");
+  eq(r("bytes=abc"), null, "nonsense");
+  eq(r("bytes=0-10, 20-30"), null, "multipart is refused rather than half-answered");
+  eq(JSON.stringify(OFF.parseRange("bytes=-5000", 1000)), JSON.stringify({ start: 0, end: 999 }),
+     "suffix longer than the file");
+});
+
+test("human sizes", () => {
+  eq(OFF.human(0), "0 MB", "nothing");
+  eq(OFF.human(8600000), "8.6 MB", "the basemap");
+  eq(OFF.human(4096), "4 kB", "small");
+});
+
+const BYTES = Uint8Array.from({ length: 4096 }, (_, i) => i % 251);
+function cached() {
+  return new Response(new Blob([BYTES]), { status: 200, headers: {
+    "Content-Type": "application/octet-stream", "Content-Length": String(BYTES.length),
+  } });
 }
 
-const BASE = [40.0520, -75.2110];   // the mock ride's trailhead
+const slicing = test("sliceCached answers Range out of the cached file", async () => {
+  const res = await OFF.sliceCached(cached(), "bytes=100-199");
+  eq(res.status, 206, "partial content");
+  eq(res.headers.get("content-range"), `bytes 100-199/${BYTES.length}`, "content-range");
+  eq(res.headers.get("content-length"), "100", "content-length");
+  const got = new Uint8Array(await res.arrayBuffer());
+  eq(got.length, 100, "body length");
+  ok(got.every((b, i) => b === BYTES[100 + i]), "body is the right slice");
 
-test("tile coordinates match the reference formula", () => {
-  for (const z of [0, 1, 5, 10, 14, 15, 17, 18]) {
-    eq(OFF.lonToX(BASE[1], z), refX(BASE[1], z), `x at z${z}`);
-    eq(OFF.latToY(BASE[0], z), refY(BASE[0], z), `y at z${z}`);
-  }
-  for (const [lat, lon] of [[-33.86, 151.21], [64.84, -147.72], [0.001, 0.001], [-0.001, -0.001]]) {
-    eq(OFF.lonToX(lon, 12), refX(lon, 12), `x ${lat},${lon}`);
-    eq(OFF.latToY(lat, 12), refY(lat, 12), `y ${lat},${lon}`);
-  }
+  const tail = await OFF.sliceCached(cached(), "bytes=4090-");
+  eq(tail.status, 206, "open-ended is partial too");
+  eq((await tail.arrayBuffer()).byteLength, 6, "to the end of the file");
+
+  const whole = await OFF.sliceCached(cached(), null);
+  eq(whole.status, 200, "no Range header means the whole file");
+  eq((await whole.arrayBuffer()).byteLength, BYTES.length, "all of it");
+
+  const bogus = await OFF.sliceCached(cached(), "bytes=99999-");
+  eq(bogus.status, 200, "an unsatisfiable range falls back to the whole file rather than failing");
 });
 
-test("world edges clamp into the grid", () => {
-  eq(OFF.lonToX(180, 4), 15, "lon 180");
-  eq(OFF.lonToX(-180, 4), 0, "lon -180");
-  eq(OFF.latToY(89.9, 4), 0, "near north pole");
-  eq(OFF.latToY(-89.9, 4), 15, "near south pole");
-  eq(OFF.lonToX(0, 0), 0, "z0 is one tile");
-  eq(OFF.latToY(0, 0), 0, "z0 is one tile");
-});
-
-// A park-sized view: ~2.2 km × 1.7 km around the trailhead.
-const PARK = { south: 40.044, west: -75.224, north: 40.060, east: -75.198 };
-
-test("a range covers the bounds, north on top", () => {
-  const r = OFF.tileRange(PARK, 15);
-  ok(r.x0 <= r.x1 && r.y0 <= r.y1, "ranges are ordered");
-  eq(r.y0, refY(PARK.north, 15), "north edge is the smaller y");
-  eq(r.x1, refX(PARK.east, 15), "east edge");
-  eq(OFF.rangeCount(r), (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1), "count");
-});
-
-test("planSave: contiguous zooms from a few levels out, under the cap", () => {
-  const plan = OFF.planSave(PARK, 15);
-  eq(plan.zMin, 15 - OFF.ZOOM_OUT_LEVELS, "starts zoomed out");
-  eq(plan.ranges[0].z, plan.zMin, "first range is zMin");
-  plan.ranges.forEach((r, i) => eq(r.z, plan.zMin + i, `range ${i} is the next zoom`));
-  ok(plan.count <= OFF.MAX_TILES, `under cap (${plan.count})`);
-  eq(plan.count, plan.ranges.reduce((n, r) => n + OFF.rangeCount(r), 0), "count is the sum");
-  eq(plan.zMax, OFF.MAX_SAVE_ZOOM, "a park fits all the way to max zoom");
-
-  const tiles = [...OFF.tilesOf(plan.ranges)];
-  eq(tiles.length, plan.count, "tilesOf yields every planned tile");
-  eq(new Set(tiles.map(t => `${t.z}/${t.x}/${t.y}`)).size, tiles.length, "no duplicates");
-});
-
-test("planSave: a big area stops at the deepest zoom that fits", () => {
-  const county = { south: 39.8, west: -75.6, north: 40.3, east: -74.9 };
-  const plan = OFF.planSave(county, 11);
-  ok(plan.zMax < OFF.MAX_SAVE_ZOOM, `stopped early (z${plan.zMax})`);
-  ok(plan.count <= OFF.MAX_TILES, "under cap");
-  const next = OFF.rangeCount(OFF.tileRange(county, plan.zMax + 1));
-  ok(plan.count + next > OFF.MAX_TILES, "the next zoom really wouldn't have fit");
-  eq(OFF.planSave(PARK, 15, 0).count, 0, "zero cap saves nothing");
-  eq(OFF.planSave(PARK, 15, 0).zMax, null, "and says so");
-});
-
-test("planSave: zoomed out near z0 doesn't go negative", () => {
-  eq(OFF.planSave(PARK, 2).zMin, 0, "zMin floors at 0");
-  eq(OFF.planSave(PARK, 14.6).zMin, 15 - OFF.ZOOM_OUT_LEVELS, "fractional zoom rounds");
-});
-
-test("tileKey: one cache key per tile, whatever subdomain served it", () => {
-  const want = "https://a.basemaps.cartocdn.com/dark_all/15/9538/12383.png";
-  eq(OFF.tileUrl(15, 9538, 12383), want, "canonical url");
-  for (const s of "abcd") {
-    eq(OFF.tileKey(`https://${s}.basemaps.cartocdn.com/dark_all/15/9538/12383.png`), want, `subdomain ${s}`);
-  }
-  eq(OFF.tileKey(want + "?v=2"), want, "query string ignored");
-  eq(OFF.tileKey("https://b.basemaps.cartocdn.com/dark_all/3/1/2@2x.png"),
-     "https://a.basemaps.cartocdn.com/dark_all/3/1/2@2x.png", "retina tiles keep @2x");
-  eq(OFF.tileKey("https://a.basemaps.cartocdn.com/light_all/15/1/1.png"), null, "other style");
-  eq(OFF.tileKey("https://e.basemaps.cartocdn.com/dark_all/15/1/1.png"), null, "other subdomain");
-  eq(OFF.tileKey("https://evil.example/a.basemaps.cartocdn.com/dark_all/1/1/1.png"), null, "other host");
-  eq(OFF.tileKey("https://wolfpack.example/index.html"), null, "app shell");
-});
-
-test("the page and the worker agree on tiles", () => {
+test("the page and the worker agree", () => {
   const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
-  const m = /L\.tileLayer\("([^"]+)",\s*\{([\s\S]*?)\}\)/.exec(html);
-  ok(m, "found the tile layer in index.html");
-  if (!m) return;
-  eq(m[1], OFF.TILE_URL, "tile URL template");
-  ok(m[2].includes(`subdomains: "${OFF.SUBDOMAINS}"`), "subdomains");
-  ok(/crossOrigin:\s*true/.test(m[2]), "tiles load CORS so the worker can cache them");
-  ok(!/unpkg\.com|jsdelivr|cdnjs/.test(html), "no script or stylesheet from a CDN");
-});
+  ok(/protomapsL\.leafletLayer/.test(html), "page renders vector tiles");
+  ok(/url:\s*OFFLINE\.BASEMAP_PATH/.test(html), "page gets the basemap path from the shared module");
+  ok(/maxDataZoom:\s*OFFLINE\.MAX_DATA_ZOOM/.test(html), "and the data zoom");
+  ok(!/cartocdn|unpkg\.com|jsdelivr|cdnjs/.test(html), "nothing loaded from a CDN");
 
-test("every precached shell file exists", () => {
   const sw = fs.readFileSync(path.join(__dirname, "sw.js"), "utf8");
   const list = /const SHELL = \[([\s\S]*?)\];/.exec(sw);
   ok(list, "found SHELL in sw.js");
   if (!list) return;
   const files = [...list[1].matchAll(/"([^"]+)"/g)].map(x => x[1]).filter(f => f !== "./");
-  ok(files.length >= 5, "shell list isn't empty");
   for (const f of files) ok(fs.existsSync(path.join(__dirname, f)), `${f} exists`);
-  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
   for (const src of html.matchAll(/(?:src|href)="((?!https?:)[^"#]+)"/g)) {
     ok(files.includes(src[1]), `page loads ${src[1]}, so the shell must precache it`);
   }
+  ok(!files.includes(OFF.BASEMAP_PATH),
+     "the basemap is NOT precached — 8.6 MB is opt-in, not something a watching parent pays for");
 });
 
-console.log(`\n${checks} checks, ${failures} failures`);
-process.exit(failures ? 1 : 0);
+test("the basemap file is a PMTiles archive covering the right zooms", () => {
+  const file = path.join(__dirname, OFF.BASEMAP_PATH);
+  ok(fs.existsSync(file), "basemap is committed");
+  if (!fs.existsSync(file)) return;
+  const head = Buffer.alloc(128);
+  const fd = fs.openSync(file, "r");
+  fs.readSync(fd, head, 0, 128, 0);
+  fs.closeSync(fd);
+  eq(head.subarray(0, 7).toString("latin1"), "PMTiles", "magic");
+  eq(head[7], 3, "spec version 3");
+  eq(head[101], OFF.MAX_DATA_ZOOM, "max zoom matches what the renderer overzooms from");
+  const mb = fs.statSync(file).size / 1e6;
+  ok(mb < 25, `small enough to save on a phone (${mb.toFixed(1)} MB)`);
+});
+
+(async () => {
+  await slicing;   // the Range tests are async; don't count before they land
+  console.log(`\n${checks} checks, ${failures} failures`);
+  process.exit(failures ? 1 : 0);
+})();

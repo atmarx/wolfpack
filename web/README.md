@@ -5,8 +5,9 @@ serve it, and it runs.
 
 ## Two modes
 
-**Mock ride (default).** Opens on a simulated follow-the-leader practice: all
-four skill teams leave the one parking-lot 🏁 base, fan out on different
+**Mock ride (default).** Opens on a simulated follow-the-leader practice at
+Pennypack, out of the Environmental Center: all four skill teams leave the one
+parking-lot 🏁 base, fan out on different
 bearings, loop their own terrain, and converge back — beginners stay close, the
 advanced group ranges farthest and drops off-mesh mid-ride so you can see the
 greyed last-known behaviour. Needs no hardware.
@@ -46,25 +47,47 @@ It also means the map understands things a generic client can't: team colour and
 role come from the beacon, and **Start Ride** clears the on-screen trails at the
 same moment it clears them on the radios.
 
+## The basemap is ours
+
+The map underneath the dots is **one file we host**: `basemap/pennypack.pmtiles`,
+a 9 MB [PMTiles](https://docs.protomaps.com/pmtiles/) extract of Pennypack cut
+from the OpenStreetMap-derived Protomaps build, rendered as vector tiles by
+`protomaps-leaflet`. No tile server, no API key, no per-tile crawl of someone
+else's CDN — and nothing at all is fetched from a third party at runtime.
+
+That last part is why it's a file and not a tile URL: every free raster
+basemap either watermarks you (CARTO stamps "API KEY REQUIRED" on keyless
+tiles) or forbids bulk offline download in its usage policy. Hosting the region
+ourselves is the only honest way to have a map that works in the woods.
+
+Re-cut it when the trails change, or for a new area:
+
+```bash
+pmtiles extract https://build.protomaps.com/<YYYYMMDD>.pmtiles pennypack.pmtiles \
+  --bbox=-75.10,40.01,-74.99,40.12 --maxzoom=15
+```
+
+(Build dates: <https://build-metadata.protomaps.dev/builds.json>. The renderer
+draws past z15 from the same vector data, so z15 stays sharp on the bars.)
+
 ## Offline: the map works with no signal
 
 The page is a service worker app. After one visit with a connection, the page,
-its scripts and Leaflet (vendored under `vendor/`, nothing from a CDN) load with
+its scripts, Leaflet and the renderer (all vendored under `vendor/`) load with
 no network at all.
 
-The **basemap** is the part that needs planning. Press **⬇ Save map offline**
-while you still have signal, with the practice area on screen: it downloads
-every tile for that view from a few zoom levels out down to z18 (capped at 3000
-tiles), and the worker serves them from cache first after that. Tiles you simply
-panned past with signal are kept too. Positions always arrive over Bluetooth and
-never needed a network.
+The basemap is the opt-in part: press **⬇ Save map offline** and the 9 MB
+archive lands in the cache. After that the map works in the woods, and a parent
+who just wants to watch dots on cell data never pays for it.
 
-Needs HTTPS (or `localhost`) — same rule as Web Bluetooth.
+The renderer reads that archive in byte ranges, and a cached file has no server
+left to answer a Range request — so the service worker slices the cached copy
+itself. That's the piece `test-offline.js` leans on hardest, because getting it
+wrong looks perfect online and blank on the trail.
 
-⚠ **The current tile source is watermarked.** CARTO now stamps "API KEY
-REQUIRED" across keyless basemap tiles. The map is still readable underneath,
-but the tile source has to change — and the ones that allow bulk offline
-download are the ones we host ourselves.
+Needs HTTPS (or `localhost`) — same rule as Web Bluetooth. In production the
+origin must also serve byte ranges for the first, uncached visit; Caddy and
+nginx do, `python3 -m http.server` does not.
 
 ## Tests
 
@@ -73,7 +96,7 @@ The wire decoding and the live timeline logic are tested off-hardware:
 ```bash
 node web/test-protocol.js   # protobuf + beacon decoding (88 checks)
 node web/test-live.js       # live peer tracking and timeline (74 checks)
-node web/test-offline.js    # tile math + page/worker wiring (88 checks)
+node web/test-offline.js    # Range slicing + page/worker wiring (57 checks)
 ```
 
 `test-protocol.js` writes its own encoders, independently of the decoder and
@@ -102,7 +125,9 @@ people join late, drop out of range, and come back.
 | `wolfpack-protocol.js` | Pure decoding: Meshtastic BLE UUIDs, a minimal protobuf reader, and the Wolfpack beacon parser. No DOM, no Bluetooth. |
 | `test-protocol.js` | Decoder tests. |
 | `test-live.js` | Live-path tests. |
-| `wolfpack-offline.js` | Tile math and "Save map offline". Shared with the service worker. |
-| `sw.js` | Service worker: app shell and saved tiles from cache. |
+| `wolfpack-offline.js` | Basemap paths, Range slicing, "Save map offline". Shared with the worker. |
+| `sw.js` | Service worker: app shell, and the saved basemap (Range-sliced). |
 | `test-offline.js` | Offline tests. |
+| `basemap/pennypack.pmtiles` | The map itself. OpenStreetMap via Protomaps (ODbL). |
 | `vendor/leaflet/` | Leaflet 1.9.4, byte-identical to the npm release (BSD-2-Clause). |
+| `vendor/protomaps/` | protomaps-leaflet 5.1.0, the vector renderer (BSD-3-Clause). |

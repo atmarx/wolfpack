@@ -66,8 +66,8 @@ The entire front end, against mock data:
   when hardware lands + we know the phone OS)
 
 → **Staged in [`/web`](../web/) — open `web/index.html` in a browser and it runs on a
-mock follow-the-leader ride right now.** Mock ride loops the Wissahickon, because of
-course it does.
+mock follow-the-leader ride right now.** Mock ride loops Pennypack, out of the
+Environmental Center — where the team actually rides.
 
 ## When hardware lands
 

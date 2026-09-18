@@ -72,6 +72,7 @@
 
 <script src="vendor/leaflet/leaflet.js"></script>
 <script src="wolfpack-protocol.js"></script>
+<script src="vendor/protomaps/protomaps-leaflet.js"></script>
 <script src="wolfpack-offline.js"></script>
 <script>
 "use strict";
@@ -116,7 +117,7 @@ const ROLE_RADIUS = { Lead: 9, Mid: 7, Tail: 6, Sweep: 6 };
 const STALE = "#6b7280";
 
 const STEP_SECONDS = 10, STEPS = 180;          // 30-min mock ride
-const BASE = [40.0520, -75.2110];              // trailhead / parking lot
+const BASE = [40.0875, -75.0592];              // Pennypack Environmental Center
 
 // Live tuning. WP_POS_STALE_MS in the firmware is 150 s — match it so the
 // map greys a teammate out at the same moment their own HUD shows "?".
@@ -130,10 +131,10 @@ const HEARTBEAT_MS = 60000;
 // in different directions and converge back. Beginners stay close;
 // advanced range farthest (and is the team that branches off-mesh).
 const PROFILE = {
-  R: { dir:  15, Ra: 0.0050, Rb: 0.0040 },   // Beginner — N-ish, closest
-  Y: { dir: 105, Ra: 0.0080, Rb: 0.0065 },   // Intermediate — E-ish
-  G: { dir: 200, Ra: 0.0110, Rb: 0.0090 },   // Proficient — SSW
-  B: { dir: 300, Ra: 0.0140, Rb: 0.0115 },   // Advanced — WNW, farthest out
+  R: { dir:  15, Ra: 0.0030, Rb: 0.0024 },   // Beginner — N-ish, closest
+  Y: { dir: 105, Ra: 0.0048, Rb: 0.0039 },   // Intermediate — E-ish
+  G: { dir: 200, Ra: 0.0066, Rb: 0.0054 },   // Proficient — SSW
+  B: { dir: 300, Ra: 0.0084, Rb: 0.0069 },   // Advanced — WNW, farthest out
 };
 const LAG = { Lead: 0, Mid: 7, Tail: 16 };   // tail trails lead along the petal
 
@@ -209,13 +210,20 @@ function buildMockRide() {
 
 // --- map ---
 const map = L.map("map", { zoomControl: true });
-// Same URL as WolfpackOffline.TILE_URL (test-offline.js holds them together).
-// crossOrigin so tiles are fetched CORS: the service worker can then check
-// and cache them, rather than storing opaque blobs it can't inspect.
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
-  maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap © CARTO",
-  crossOrigin: true,
-}).addTo(map);
+// The basemap is our own file — an OpenStreetMap-derived PMTiles extract of
+// Pennypack served from this origin. No tile CDN, no API key, and "save the
+// map for the trail" is one download instead of crawling thousands of tiles.
+// (The raster fallback is only for the node tests, which stub Leaflet and
+// never load the renderer.)
+const OFFLINE = window.WolfpackOffline;
+if (window.protomapsL && OFFLINE) {
+  window.protomapsL.leafletLayer({
+    url: OFFLINE.BASEMAP_PATH, flavor: "light", lang: "en",
+    maxDataZoom: OFFLINE.MAX_DATA_ZOOM, attribution: OFFLINE.ATTRIBUTION,
+  }).addTo(map);
+} else {
+  L.tileLayer("", { maxZoom: 19 }).addTo(map);
+}
 
 let RIDE = null;
 let layers = {};
@@ -561,7 +569,7 @@ DataSource.replay(buildMockRide());
 // Offline basemap: service worker + "Save map offline". Absent in the node
 // tests (they stub the DOM and never load wolfpack-offline.js).
 if (window.WolfpackOffline) {
-  window.WolfpackOffline.attach(map, document.getElementById("saveMap"),
+  window.WolfpackOffline.attach(document.getElementById("saveMap"),
                                 document.getElementById("offline"));
 }
 setStatus("Showing a mock ride. Press “Connect radio” to go live (Chrome on Android, over HTTPS).");

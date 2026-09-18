@@ -2,17 +2,22 @@
  * Wolfpack service worker — the map keeps working with no signal.
  *
  *   app shell (page, scripts, Leaflet)  → cache, refreshed in the background
- *   basemap tiles                       → cache first, network fills gaps
+ *   basemap (one PMTiles file)          → cache first, Range requests sliced
+ *                                          out of the cached copy
  *
  * The shell is stale-while-revalidate rather than network-first on
  * purpose: at a trailhead with one bar, network-first means staring at a
  * blank page while a request times out. Cost: a new version of the page
  * shows up on the second load after it deploys, not the first.
+ *
+ * The basemap is deliberately NOT precached — it's 8.6 MB, and a parent
+ * who just wants to watch dots on cell data shouldn't pay for it. The
+ * "Save map offline" button is the opt-in.
  * ------------------------------------------------------------------ */
 importScripts("wolfpack-offline.js");
 const OFF = self.WolfpackOffline;
 
-const SHELL_CACHE = "wolfpack-shell-v1";
+const SHELL_CACHE = "wolfpack-shell-v2";
 const SHELL = [
   "./",
   "index.html",
@@ -25,6 +30,7 @@ const SHELL = [
   "vendor/leaflet/images/marker-icon.png",
   "vendor/leaflet/images/marker-icon-2x.png",
   "vendor/leaflet/images/marker-shadow.png",
+  "vendor/protomaps/protomaps-leaflet.js",
 ];
 
 self.addEventListener("install", event => {
@@ -32,8 +38,8 @@ self.addEventListener("install", event => {
 });
 
 self.addEventListener("activate", event => {
-  // Drop old shell versions. Never the tile cache — those tiles were a
-  // deliberate download and a code deploy shouldn't throw them away.
+  // Drop old shell versions. Never the basemap — that was a deliberate
+  // 8.6 MB download and a code deploy shouldn't throw it away.
   event.waitUntil(
     caches.keys()
       .then(keys => Promise.all(keys
@@ -46,26 +52,20 @@ self.addEventListener("fetch", event => {
   const req = event.request;
   if (req.method !== "GET") return;
 
-  const key = OFF.tileKey(req.url);
-  if (key) { event.respondWith(tile(key)); return; }
-
+  if (OFF.isBasemap(req.url)) { event.respondWith(basemap(req)); return; }
   if (new URL(req.url).origin === self.location.origin) event.respondWith(shell(event));
 });
 
-async function tile(key) {
-  const cache = await caches.open(OFF.TILE_CACHE);
-  const hit = await cache.match(key);
-  if (hit) return hit;
+async function basemap(req) {
+  const cache = await caches.open(OFF.BASEMAP_CACHE);
+  const hit = await cache.match(OFF.BASEMAP_PATH);
+  // The renderer reads the file in pieces (Range), so a saved map has to be
+  // sliced here — the cache stores one whole response, not each range.
+  if (hit) return OFF.sliceCached(hit, req.headers.get("range"));
   try {
-    // Always CORS, whatever the <img> asked for: an opaque response can't
-    // be checked for success, and Chrome pads each one to megabytes of quota.
-    const res = await fetch(key, { mode: "cors", credentials: "omit" });
-    // Anything we panned past with signal is kept, so the tiles you looked
-    // at on the drive in are there on the trail too.
-    if (res.ok) cache.put(key, res.clone());
-    return res;
+    return await fetch(req);
   } catch (e) {
-    return new Response("", { status: 504, statusText: "offline, tile not saved" });
+    return new Response("", { status: 504, statusText: "offline, map not saved" });
   }
 }
 
