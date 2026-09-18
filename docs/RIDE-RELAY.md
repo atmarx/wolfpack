@@ -118,8 +118,9 @@ things once will not trust it when it matters. **Do not build the roll call.**
   does today and the coaches' screens never notice.
 - **Public sharing.** There is no discoverable list of rides, ever.
 
-## Open
+## Settled
 
-- Retention: 30 days is a proposal, not a decision.
-- Does the base station want a "who's missing" roll call, given the relay finally
-  knows the whole pack in one place?
+- Codes are made by typing a date. Random, tied to that date, never derived
+  from it.
+- Retention: 7 days, with export.
+- No roll call. See above — that one is not reopening.
