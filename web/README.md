@@ -87,9 +87,10 @@ people join late, drop out of range, and come back.
 
 ## What isn't built yet
 
-- **Ride storage.** Everything lives in the tab. Close it and the ride is gone.
-  A Strava-shaped history needs the phone to log the session somewhere — that's
-  the backend conversation, and the bigger half of the work.
+- **Ride storage / the ride relay.** Everything lives in the tab. Close it and
+  the ride is gone. The design for coaches' phones relaying over cell — ride
+  codes, share links, replay of a night's ride — is in
+  [`docs/RIDE-RELAY.md`](../docs/RIDE-RELAY.md). Not built yet.
 - **Status pills** (injury / mechanical). The renderer supports them and the mock
   demonstrates them; nothing on the wire sets them yet.
 
