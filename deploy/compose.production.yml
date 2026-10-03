@@ -1,6 +1,8 @@
-# Production on xdroplet04: wolfpack.xram.net.  IMAGE_TAG is the tagged
-# commit's short SHA, passed in by scripts/deploy-production.sh, so prod runs
-# exactly what was tagged — not whatever :latest became since.
+# Production on xdroplet04: wolfpack.xram.net.  IMAGE_TAG is the short
+# CI_COMMIT_SHA of the tag pipeline, passed in by scripts/deploy-production.sh,
+# so prod runs exactly what was tagged — not whatever :latest became since.
+# (For an annotated tag Woodpecker reports the tag object's SHA, not the
+# commit's.  build.yml tags the image with the same value, so they match.)
 name: wolfpack
 
 services:

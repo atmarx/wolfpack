@@ -6,8 +6,8 @@
 # Cut a tag or the changes pile up unpublished — that has bitten sibling repos.
 #
 # SSHs into xdroplet04, stages the compose file and Caddy vhost into
-# /opt/projects/wolfpack, pulls the image built for THIS commit (short SHA,
-# not :latest), brings it up, installs the vhost and reloads Caddy.
+# /opt/projects/wolfpack, pulls the image build.yml pushed for THIS tag
+# (short CI_COMMIT_SHA, not :latest), brings it up, installs the vhost and reloads Caddy.
 #
 # Ported from running-on-empty, including its stdin rules:
 #   - Every ssh that doesn't need stdin gets `-n`.  Woodpecker pipes the step

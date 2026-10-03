@@ -1,9 +1,9 @@
 #!/bin/bash
 # Runs ON xdroplet04, fed over ssh by .woodpecker/deploy-production.yml with
-# IMAGE_TAG set to the tagged commit's short SHA.
+# IMAGE_TAG set to the tag pipeline's short CI_COMMIT_SHA (the image build.yml pushed).
 set -euo pipefail
 
-: "${IMAGE_TAG:?IMAGE_TAG must be set (short SHA of the tagged commit)}"
+: "${IMAGE_TAG:?IMAGE_TAG must be set (short CI_COMMIT_SHA of the tag pipeline)}"
 export IMAGE_TAG
 
 cd /opt/projects/wolfpack
