@@ -49,9 +49,11 @@ same moment it clears them on the radios.
 
 ## The basemap is ours
 
-The map underneath the dots is **one file we host**: `basemap/pennypack.pmtiles`,
-a 9 MB [PMTiles](https://docs.protomaps.com/pmtiles/) extract of Pennypack cut
-from the OpenStreetMap-derived Protomaps build, rendered as vector tiles by
+The map underneath the dots is **one file we host per riding area** —
+`basemap/pennypack.pmtiles` (9 MB) and `basemap/bluemountain.pmtiles` (2.3 MB,
+the Blue Mountain Resort ridge from Lehigh Gap to Little Gap) — each a
+[PMTiles](https://docs.protomaps.com/pmtiles/) extract cut from the
+OpenStreetMap-derived Protomaps build, rendered as vector tiles by
 `protomaps-leaflet`. No tile server, no API key, no per-tile crawl of someone
 else's CDN — and nothing at all is fetched from a third party at runtime.
 
@@ -60,7 +62,11 @@ basemap either watermarks you (CARTO stamps "API KEY REQUIRED" on keyless
 tiles) or forbids bulk offline download in its usage policy. Hosting the region
 ourselves is the only honest way to have a map that works in the woods.
 
-Re-cut it when the trails change, or for a new area:
+The area picker in the header chooses which map to show and save, and the live
+view switches on its own when the first fix lands inside another area's box.
+Re-cut a file when the trails change. For a new area, cut it, then add a line to
+`REGIONS` in `wolfpack-offline.js` with the same box (`test-offline.js` checks
+that each file's bounds match its entry):
 
 ```bash
 pmtiles extract https://build.protomaps.com/<YYYYMMDD>.pmtiles pennypack.pmtiles \

@@ -2,7 +2,7 @@
  * Wolfpack service worker — the map keeps working with no signal.
  *
  *   app shell (page, scripts, Leaflet)  → cache, refreshed in the background
- *   basemap (one PMTiles file)          → cache first, Range requests sliced
+ *   basemap (a PMTiles file per region) → cache first, Range requests sliced
  *                                          out of the cached copy
  *
  * The shell is stale-while-revalidate rather than network-first on
@@ -17,7 +17,7 @@
 importScripts("wolfpack-offline.js");
 const OFF = self.WolfpackOffline;
 
-const SHELL_CACHE = "wolfpack-shell-v2";
+const SHELL_CACHE = "wolfpack-shell-v3";
 const SHELL = [
   "./",
   "index.html",
@@ -58,7 +58,7 @@ self.addEventListener("fetch", event => {
 
 async function basemap(req) {
   const cache = await caches.open(OFF.BASEMAP_CACHE);
-  const hit = await cache.match(OFF.BASEMAP_PATH);
+  const hit = await cache.match(OFF.regionFor(req.url).path);
   // The renderer reads the file in pieces (Range), so a saved map has to be
   // sliced here — the cache stores one whole response, not each range.
   if (hit) return OFF.sliceCached(hit, req.headers.get("range"));

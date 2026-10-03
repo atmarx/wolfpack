@@ -50,7 +50,8 @@
     <h1>🐺 Wolfpack — team map &amp; timelapse</h1>
     <button id="connect">Connect radio</button>
     <span class="badge" id="mode">MOCK DATA</span>
-    <button id="saveMap" title="Download the map tiles for the area on screen, so the basemap works on the trail with no signal">⬇ Save map offline</button>
+    <select id="region" title="Which riding area's map to show and save"></select>
+    <button id="saveMap" title="Download this area's map, so the basemap works on the trail with no signal">⬇ Save map offline</button>
     <span id="offline"></span>
     <span class="legend" id="legend"></span>
   </header>
@@ -211,18 +212,44 @@ function buildMockRide() {
 // --- map ---
 const map = L.map("map", { zoomControl: true });
 // The basemap is our own file — an OpenStreetMap-derived PMTiles extract of
-// Pennypack served from this origin. No tile CDN, no API key, and "save the
-// map for the trail" is one download instead of crawling thousands of tiles.
-// (The raster fallback is only for the node tests, which stub Leaflet and
-// never load the renderer.)
+// one riding area, served from this origin. No tile CDN, no API key, and
+// "save the map for the trail" is one download instead of crawling
+// thousands of tiles. (The raster fallback is only for the node tests,
+// which stub Leaflet and never load the renderer.)
 const OFFLINE = window.WolfpackOffline;
-if (window.protomapsL && OFFLINE) {
-  window.protomapsL.leafletLayer({
-    url: OFFLINE.BASEMAP_PATH, flavor: "light", lang: "en",
+let region = null, basemap = null, refreshSaved = () => {};
+
+function setRegion(id, frame) {
+  region = OFFLINE.region(id);
+  try { localStorage.setItem("wolfpack-region", region.id); } catch (e) {}
+  document.getElementById("region").value = region.id;
+  if (basemap) basemap.remove();
+  basemap = window.protomapsL.leafletLayer({
+    url: region.path, flavor: "light", lang: "en",
     maxDataZoom: OFFLINE.MAX_DATA_ZOOM, attribution: OFFLINE.ATTRIBUTION,
   }).addTo(map);
+  if (frame) map.fitBounds(region.bounds);
+  refreshSaved();
+}
+
+if (window.protomapsL && OFFLINE) {
+  const pick = document.getElementById("region");
+  pick.innerHTML = OFFLINE.REGIONS.map(r => `<option value="${r.id}">${r.name}</option>`).join("");
+  pick.addEventListener("change", () => setRegion(pick.value, true));
+  let saved = null;
+  try { saved = localStorage.getItem("wolfpack-region"); } catch (e) {}
+  setRegion(saved);
 } else {
   L.tileLayer("", { maxZoom: 19 }).addTo(map);
+}
+
+/** Live: the pack turned up somewhere — show that area's map if we have one. */
+function followRegion(lat, lon) {
+  const here = OFFLINE && OFFLINE.regionAt(lat, lon);
+  if (here && here !== region) {
+    setRegion(here.id, false);
+    setStatus(`Switched to the ${here.name} map.`);
+  }
 }
 
 let RIDE = null;
@@ -385,7 +412,10 @@ const Live = {
     if (beacon.hasPosition) {
       peer.lastPos = [beacon.lat, beacon.lon];
       peer.lastPosMs = nowMs;
-      if (!RIDE.base) RIDE.base = peer.lastPos;   // first fix seen = the trailhead
+      if (!RIDE.base) {                       // first fix seen = the trailhead
+        RIDE.base = peer.lastPos;
+        followRegion(beacon.lat, beacon.lon);
+      }
     }
   },
 
@@ -498,11 +528,18 @@ const Live = {
     this.device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
 
     setStatus("Connecting…");
-    this.gatt = await this.device.gatt.connect();
-    const svc = await this.gatt.getPrimaryService(WP.BLE.SERVICE);
-    this.toRadio = await svc.getCharacteristic(WP.BLE.TORADIO);
-    this.fromRadio = await svc.getCharacteristic(WP.BLE.FROMRADIO);
-    this.fromNum = await svc.getCharacteristic(WP.BLE.FROMNUM);
+    try {
+      this.gatt = await this.device.gatt.connect();
+      const svc = await this.gatt.getPrimaryService(WP.BLE.SERVICE);
+      this.toRadio = await svc.getCharacteristic(WP.BLE.TORADIO);
+      this.fromRadio = await svc.getCharacteristic(WP.BLE.FROMRADIO);
+      this.fromNum = await svc.getCharacteristic(WP.BLE.FROMNUM);
+    } catch (e) {
+      // The usual cause: the radio is already talking to something else, and
+      // it serves one client at a time. The browser's own error doesn't say so.
+      throw new Error((e.message || String(e)) + " — if the radio is connected in Android's " +
+                      "Bluetooth settings or the Meshtastic app, disconnect it there and try again.");
+    }
 
     this.reset();
 
@@ -565,14 +602,23 @@ const DataSource = {
 document.getElementById("connect").addEventListener("click", () => DataSource.connectLive());
 
 DataSource.replay(buildMockRide());
+// The mock ride is at Pennypack; if the saved area is elsewhere, show that
+// area's map rather than the demo over a blank background.
+if (region && OFFLINE.regionAt(...BASE) !== region) map.fitBounds(region.bounds);
 
 // Offline basemap: service worker + "Save map offline". Absent in the node
 // tests (they stub the DOM and never load wolfpack-offline.js).
 if (window.WolfpackOffline) {
-  window.WolfpackOffline.attach(document.getElementById("saveMap"),
-                                document.getElementById("offline"));
+  refreshSaved = window.WolfpackOffline.attach(document.getElementById("saveMap"),
+                                               document.getElementById("offline"), () => region);
 }
-setStatus("Showing a mock ride. Press “Connect radio” to go live (Chrome on Android, over HTTPS).");
+if (navigator.bluetooth) {
+  setStatus("Showing a mock ride. Press “Connect radio” to go live (Chrome on Android, over HTTPS).");
+} else {
+  // Firefox and Safari have no Web Bluetooth at all — say so before the click fails.
+  setStatus("Showing a mock ride. This browser can't talk to the radio (no Web Bluetooth) — " +
+            "open this page in Chrome to go live.");
+}
 </script>
 </body>
 </html>

@@ -26,13 +26,26 @@ function ok(cond, msg) {
 function eq(a, b, msg) { ok(a === b, `${msg}: got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`); }
 function test(name, fn) { current = name; return fn(); }
 
-test("isBasemap recognises the file, and nothing else", () => {
-  ok(OFF.isBasemap("https://wolfpack.example/" + OFF.BASEMAP_PATH), "absolute");
-  ok(OFF.isBasemap(OFF.BASEMAP_PATH), "relative");
-  ok(OFF.isBasemap("https://wolfpack.example/sub/dir/" + OFF.BASEMAP_PATH), "under a subpath");
+test("isBasemap recognises the region files, and nothing else", () => {
+  for (const r of OFF.REGIONS) {
+    ok(OFF.isBasemap("https://wolfpack.example/" + r.path), `${r.id}: absolute`);
+    ok(OFF.isBasemap(r.path), `${r.id}: relative`);
+    ok(OFF.isBasemap("https://wolfpack.example/sub/dir/" + r.path), `${r.id}: under a subpath`);
+    eq(OFF.regionFor("https://wolfpack.example/" + r.path), r, `${r.id}: maps back to its region`);
+  }
   ok(!OFF.isBasemap("https://wolfpack.example/index.html"), "the page");
   ok(!OFF.isBasemap("https://wolfpack.example/basemap/other.pmtiles"), "some other archive");
   ok(!OFF.isBasemap("https://wolfpack.example/wolfpack-protocol.js"), "a script");
+});
+
+test("regions: lookup by id and by position", () => {
+  eq(OFF.region("bluemountain").name, "Blue Mountain", "by id");
+  eq(OFF.region("nowhere"), OFF.REGIONS[0], "unknown id falls back to the first region");
+  eq(OFF.region(null), OFF.REGIONS[0], "and so does no id at all");
+  eq(OFF.regionAt(40.0875, -75.0592).id, "pennypack", "Pennypack Environmental Center");
+  eq(OFF.regionAt(40.8167, -75.5098).id, "bluemountain", "Blue Mountain Resort");
+  eq(OFF.regionAt(39.95, -75.16), null, "Center City is on no map");
+  eq(new Set(OFF.REGIONS.map(r => r.id)).size, OFF.REGIONS.length, "ids are unique");
 });
 
 test("parseRange handles what a byte-range reader actually sends", () => {
@@ -89,7 +102,7 @@ const slicing = test("sliceCached answers Range out of the cached file", async (
 test("the page and the worker agree", () => {
   const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
   ok(/protomapsL\.leafletLayer/.test(html), "page renders vector tiles");
-  ok(/url:\s*OFFLINE\.BASEMAP_PATH/.test(html), "page gets the basemap path from the shared module");
+  ok(/url:\s*region\.path/.test(html), "page gets the basemap path from the shared region table");
   ok(/maxDataZoom:\s*OFFLINE\.MAX_DATA_ZOOM/.test(html), "and the data zoom");
   ok(!/cartocdn|unpkg\.com|jsdelivr|cdnjs/.test(html), "nothing loaded from a CDN");
 
@@ -102,23 +115,34 @@ test("the page and the worker agree", () => {
   for (const src of html.matchAll(/(?:src|href)="((?!https?:)[^"#]+)"/g)) {
     ok(files.includes(src[1]), `page loads ${src[1]}, so the shell must precache it`);
   }
-  ok(!files.includes(OFF.BASEMAP_PATH),
-     "the basemap is NOT precached — 8.6 MB is opt-in, not something a watching parent pays for");
+  for (const r of OFF.REGIONS) {
+    ok(!files.includes(r.path),
+       `${r.id}: the basemap is NOT precached — it's opt-in, not something a watching parent pays for`);
+  }
 });
 
-test("the basemap file is a PMTiles archive covering the right zooms", () => {
-  const file = path.join(__dirname, OFF.BASEMAP_PATH);
-  ok(fs.existsSync(file), "basemap is committed");
-  if (!fs.existsSync(file)) return;
-  const head = Buffer.alloc(128);
-  const fd = fs.openSync(file, "r");
-  fs.readSync(fd, head, 0, 128, 0);
-  fs.closeSync(fd);
-  eq(head.subarray(0, 7).toString("latin1"), "PMTiles", "magic");
-  eq(head[7], 3, "spec version 3");
-  eq(head[101], OFF.MAX_DATA_ZOOM, "max zoom matches what the renderer overzooms from");
-  const mb = fs.statSync(file).size / 1e6;
-  ok(mb < 25, `small enough to save on a phone (${mb.toFixed(1)} MB)`);
+test("each basemap file is a PMTiles archive cut to its region's box", () => {
+  for (const r of OFF.REGIONS) {
+    const file = path.join(__dirname, r.path);
+    ok(fs.existsSync(file), `${r.id}: basemap is committed`);
+    if (!fs.existsSync(file)) continue;
+    const head = Buffer.alloc(127);
+    const fd = fs.openSync(file, "r");
+    fs.readSync(fd, head, 0, 127, 0);
+    fs.closeSync(fd);
+    eq(head.subarray(0, 7).toString("latin1"), "PMTiles", `${r.id}: magic`);
+    eq(head[7], 3, `${r.id}: spec version 3`);
+    eq(head[101], OFF.MAX_DATA_ZOOM, `${r.id}: max zoom matches what the renderer overzooms from`);
+    // The header's bounds (int32 degrees x 1e7) must be the table's, or the
+    // page picks this map for a spot it has no tiles for.
+    const deg = off => head.readInt32LE(off) / 1e7;
+    const [[s, w], [n, e]] = r.bounds;
+    ok(Math.abs(deg(102) - w) < 1e-4 && Math.abs(deg(106) - s) < 1e-4 &&
+       Math.abs(deg(110) - e) < 1e-4 && Math.abs(deg(114) - n) < 1e-4,
+       `${r.id}: file bounds ${[deg(106), deg(102), deg(114), deg(110)]} match the table ${[s, w, n, e]}`);
+    const mb = fs.statSync(file).size / 1e6;
+    ok(mb < 25, `${r.id}: small enough to save on a phone (${mb.toFixed(1)} MB)`);
+  }
 });
 
 (async () => {
