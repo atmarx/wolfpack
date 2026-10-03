@@ -396,6 +396,31 @@ const Live = {
              base: null, isLive: true, startedAt: this.startedAt, times: [], trailFrom: 0 };
   },
 
+  /**
+   * The radio to connect to. A radio this page connected to before comes
+   * straight back from getDevices() with no chooser — which matters, because
+   * a Meshtastic radio stops advertising while anything holds a connection,
+   * and the chooser only lists radios that are advertising. Where Chrome
+   * doesn't offer getDevices(), or that radio isn't remembered, it's the chooser.
+   */
+  async pickRadio() {
+    let lastId = null;
+    try { lastId = localStorage.getItem("wolfpack-radio"); } catch (e) {}
+    if (lastId && navigator.bluetooth.getDevices) {
+      try {
+        const known = (await navigator.bluetooth.getDevices()).find(d => d.id === lastId);
+        if (known) { setStatus("Reconnecting to " + (known.name || "your radio") + "…"); return known; }
+      } catch (e) { /* fall through to the chooser */ }
+    }
+    setStatus("Choose your radio…");
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [WP.BLE.SERVICE] }],
+      optionalServices: [WP.BLE.SERVICE],
+    });
+    try { localStorage.setItem("wolfpack-radio", dev.id); } catch (e) {}
+    return dev;
+  },
+
   /** Is RIDE a recording we should keep adding to, rather than start over? */
   canContinue(now) {
     if (!RIDE || !RIDE.isLive || !RIDE.times || !RIDE.times.length) return false;
@@ -553,12 +578,10 @@ const Live = {
       throw new Error("Web Bluetooth needs HTTPS (or localhost). Serve this page over TLS.");
     }
 
-    setStatus("Choose your radio…");
-    this.device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [WP.BLE.SERVICE] }],
-      optionalServices: [WP.BLE.SERVICE],
-    });
-    this.device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
+    this.device = await this.pickRadio();
+    // Assigned, not added: a remembered device object comes back on every
+    // reconnect, and stacked listeners would run onDisconnect once per connect.
+    this.device.ongattserverdisconnected = () => this.onDisconnect();
 
     setStatus("Connecting…");
     try {
@@ -568,10 +591,14 @@ const Live = {
       this.fromRadio = await svc.getCharacteristic(WP.BLE.FROMRADIO);
       this.fromNum = await svc.getCharacteristic(WP.BLE.FROMNUM);
     } catch (e) {
+      // A remembered radio that won't answer (out of range, switched off):
+      // forget it, so the next press opens the chooser instead of retrying.
+      try { localStorage.removeItem("wolfpack-radio"); } catch (_) {}
       // The usual cause: the radio is already talking to something else, and
       // it serves one client at a time. The browser's own error doesn't say so.
       throw new Error((e.message || String(e)) + " — if the radio is connected in Android's " +
-                      "Bluetooth settings or the Meshtastic app, disconnect it there and try again.");
+                      "Bluetooth settings or the Meshtastic app, disconnect it there. Still stuck? " +
+                      "Turn the phone's Bluetooth off and on, then press Connect.");
     }
 
     // A reconnect — or a reload that recovered a recent ride — carries on
@@ -656,6 +683,13 @@ document.getElementById("export").addEventListener("click", () => {
 // Android freezes a hidden tab without warning — save on the way out.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") saveRide();
+});
+// Leaving or reloading: let go of the radio. Otherwise the dead page can
+// hold the connection, the radio stops advertising, and the reloaded page's
+// chooser can't find it while Android still shows it as connected.
+window.addEventListener("pagehide", () => {
+  saveRide();
+  try { if (Live.device && Live.device.gatt.connected) Live.device.gatt.disconnect(); } catch (e) {}
 });
 
 DataSource.replay(buildMockRide());

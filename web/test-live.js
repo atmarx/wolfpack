@@ -49,6 +49,7 @@ const sandbox = {
     addEventListener() {},
   },
   navigator: {},
+  addEventListener() {},
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
@@ -256,5 +257,42 @@ test("a reconnect carries on the same ride; a long gap starts a new one", () => 
   ok(!Live.canContinue(Date.now() + 3 * 3600 * 1000), "three hours later, it's a new ride");
 });
 
-console.log(`\n${checks} checks, ${failures} failures`);
-process.exit(failures ? 1 : 0);
+// A Meshtastic radio stops advertising while a connection is held, so the
+// chooser can't list a radio a reloaded page still has open. pickRadio()
+// must reach a remembered radio without it.
+async function pickTests() {
+  const store = {};
+  sandbox.localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; },
+                           removeItem: k => { delete store[k]; } };
+  let chooserCalls = 0;
+  const radio = { id: "abc", name: "OS_a616" };
+  const bt = {
+    requestDevice: async () => { chooserCalls++; return radio; },
+  };
+  sandbox.navigator.bluetooth = bt;
+
+  current = "first connect uses the chooser and remembers the radio";
+  eq(await Live.pickRadio(), radio, "got the radio");
+  eq(chooserCalls, 1, "chooser opened");
+  eq(store["wolfpack-radio"], "abc", "radio remembered");
+
+  current = "no getDevices(): the chooser again";
+  await Live.pickRadio();
+  eq(chooserCalls, 2, "chooser opened");
+
+  current = "getDevices() + a remembered radio: no chooser";
+  bt.getDevices = async () => [{ id: "zzz" }, radio];
+  eq(await Live.pickRadio(), radio, "the remembered radio");
+  eq(chooserCalls, 2, "chooser not opened");
+
+  current = "a remembered radio the browser no longer knows: the chooser";
+  bt.getDevices = async () => [];
+  await Live.pickRadio();
+  eq(chooserCalls, 3, "chooser opened");
+  delete sandbox.navigator.bluetooth;
+}
+
+pickTests().then(() => {
+  console.log(`\n${checks} checks, ${failures} failures`);
+  process.exit(failures ? 1 : 0);
+});
