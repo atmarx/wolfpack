@@ -1,0 +1,24 @@
+# In-container Caddy.  TLS lives on the front door (xdroplet04's caddy-stack in
+# production, the xdocker01 gateway on wolfpack.dev) — this only serves files.
+{
+	admin off
+	auto_https off
+}
+
+:3000 {
+	root * /srv
+
+	# Revalidate everything, every time.  There are no hashed filenames, so
+	# anything the browser caches on its own would hide a deploy from the
+	# service worker — sw.js above all.  ETags keep the revalidation a 304.
+	header Cache-Control "no-cache"
+	header -Server
+
+	# The basemap is read by Range (renderer) and whole (Save map offline).
+	# Its tiles are already compressed, and an encoded body can't be sliced,
+	# so it's served byte-for-byte.
+	@compressible not path *.pmtiles
+	encode @compressible zstd gzip
+
+	file_server
+}

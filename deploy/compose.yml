@@ -1,0 +1,18 @@
+# Internal staging on xdocker01: wolfpack.dev.xram.net, via the gateway's
+# *.dev wildcard ({slug}-app:3000 on gateway-stack_gateway).  Every push to
+# main lands here.  Production is a tag — see .woodpecker/deploy-production.yml.
+name: wolfpack
+services:
+  app:
+    image: git.dev.xram.net/atmarx/meshtastic:latest
+    container_name: wolfpack-app
+    restart: unless-stopped
+    expose:
+      - "3000"
+    networks:
+      - gateway
+
+networks:
+  gateway:
+    external: true
+    name: gateway-stack_gateway

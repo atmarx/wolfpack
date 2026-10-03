@@ -1,0 +1,30 @@
+# wolfpack.xram.net — Caddy site config (production, xdroplet04).
+#
+# Dropped into /opt/caddy-stack/sites/ by scripts/deploy-production.sh and
+# loaded by the shared Caddy (host network).  wolfpack-prod publishes to
+# 127.0.0.1:3019.
+#
+# Public on purpose: coaches load the page at home on cell data and ride with
+# it cached.  HTTPS is load-bearing — Web Bluetooth and service workers both
+# refuse to run in an insecure context.
+#
+# No `encode` here: the container already compresses the text assets, and the
+# PMTiles basemap must pass through unencoded so Range requests stay sliceable.
+
+(wolfpack_security_headers) {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+}
+
+wolfpack.xram.net {
+    import wolfpack_security_headers
+
+    reverse_proxy 127.0.0.1:3019 {
+        header_up X-Real-IP {remote_host}
+    }
+}

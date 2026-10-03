@@ -5,8 +5,9 @@
 #   CD  = basically nothing — firmware gets flashed to radios, not deployed.
 #         The closest thing to a "deploy" is publishing a flashable .bin/.uf2
 #         artifact (wired in below once the Meshtastic fork + Wolfpack module land).
-#         The only piece that will ever deploy to a docker host is the future
-#         dog-tracking web map.
+#         The phone map in web/ is the one thing that deploys to a host:
+#         build.yml → deploy.yml (wolfpack.dev, main) and
+#         deploy-production.yml (wolfpack.xram.net, web-v* tags).
 
 when:
   - event: [push, pull_request]

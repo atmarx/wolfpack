@@ -1,0 +1,20 @@
+# Production on xdroplet04: wolfpack.xram.net.  IMAGE_TAG is the tagged
+# commit's short SHA, passed in by scripts/deploy-production.sh, so prod runs
+# exactly what was tagged — not whatever :latest became since.
+name: wolfpack
+
+services:
+  app:
+    image: git.dev.xram.net/atmarx/meshtastic:${IMAGE_TAG:-latest}
+    container_name: wolfpack-prod
+    restart: unless-stopped
+    ports:
+      # Picked by asking xdroplet04 what it already binds (3010-3018, 3030,
+      # 8080, 8090 are taken), not by reading sibling repos:
+      #   docker ps --format '{{.Ports}}' | grep -o '127.0.0.1:[0-9]*' | sort -u
+      - "127.0.0.1:3019:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

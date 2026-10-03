@@ -1,0 +1,48 @@
+# Wolfpack — Deploy to Production (xdroplet04, wolfpack.xram.net)
+#
+# Fires on web-v* tags only, so a firmware tag never redeploys the map:
+#   git tag web-v0.2.0 && git push origin web-v0.2.0
+# Pushing to main updates wolfpack.dev.xram.net and does NOT touch production.
+# Cut a tag or the changes pile up unpublished — that has bitten sibling repos.
+#
+# SSHs into xdroplet04, stages the compose file and Caddy vhost into
+# /opt/projects/wolfpack, pulls the image built for THIS commit (short SHA,
+# not :latest), brings it up, installs the vhost and reloads Caddy.
+#
+# Ported from running-on-empty, including its stdin rules:
+#   - Every ssh that doesn't need stdin gets `-n`.  Woodpecker pipes the step
+#     script into busybox ash via STDIN, and a bare ssh drains the unread tail
+#     ("syntax error: unterminated quoted string").  The final ssh is safe —
+#     its stdin is the script file, not the pipe.
+#   - The image stays pinned.  Unpinned alpine brought an openssh that drains
+#     stdin harder, and that's how the bug surfaced months after it was written.
+
+when:
+  - event: tag
+    ref: refs/tags/web-v*
+
+labels:
+  host: xdocker01
+
+depends_on:
+  - build
+
+steps:
+  - name: deploy-production
+    image: alpine:3.23  # pinned — see header
+    environment:
+      DROPLET_SSH_KEY:
+        from_secret: droplet04_ssh_key
+      DROPLET_HOSTINFO:
+        from_secret: droplet04_hostinfo
+    commands:
+      - apk add --no-cache openssh-client rsync
+      - 'export DROPLET_IP=$(printf "%s" "$DROPLET_HOSTINFO" | tr -d "\r\n" | cut -d"|" -f1)'
+      - 'export DROPLET_HOST=$(printf "%s" "$DROPLET_HOSTINFO" | tr -d "\r\n" | cut -d"|" -f2)'
+      - mkdir -p ~/.ssh
+      - echo "$DROPLET_SSH_KEY" > ~/.ssh/id_ed25519
+      - chmod 600 ~/.ssh/id_ed25519
+      - ssh-keyscan -H "$DROPLET_HOST" "$DROPLET_IP" >> ~/.ssh/known_hosts 2>/dev/null
+      - ssh -n -o StrictHostKeyChecking=accept-new deploy@"$DROPLET_HOST" "mkdir -p /opt/projects/wolfpack/caddy /opt/projects/wolfpack/_staged"
+      - rsync -az deploy/compose.production.yml deploy/wolfpack.caddy deploy@"$DROPLET_HOST":/opt/projects/wolfpack/_staged/
+      - ssh -o StrictHostKeyChecking=accept-new deploy@"$DROPLET_HOST" "IMAGE_TAG=${CI_COMMIT_SHA:0:7} bash -s" < scripts/deploy-production.sh
