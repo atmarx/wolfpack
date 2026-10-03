@@ -65,6 +65,7 @@
       <option value="2" selected>2×</option>
       <option value="4">4×</option>
     </select>
+    <button id="export" disabled title="Download this ride as a GPX file — one track per radio">⬇ GPX</button>
     <span id="alerts"></span>
     <span id="spread"></span>
     <span id="status"></span>
@@ -75,6 +76,7 @@
 <script src="wolfpack-protocol.js"></script>
 <script src="vendor/protomaps/protomaps-leaflet.js"></script>
 <script src="wolfpack-offline.js"></script>
+<script src="wolfpack-record.js"></script>
 <script>
 "use strict";
 
@@ -124,7 +126,11 @@ const BASE = [40.0875, -75.0592];              // Pennypack Environmental Center
 // map greys a teammate out at the same moment their own HUD shows "?".
 const LIVE_STEP_SECONDS = 5;
 const LIVE_STALE_SECONDS = 150;
-const LIVE_MAX_STEPS = (4 * 3600) / LIVE_STEP_SECONDS;   // 4 hours is plenty
+const LIVE_MAX_STEPS = (8 * 3600) / LIVE_STEP_SECONDS;   // a long day at the mountain
+// Reconnect within this long and the recording carries on (the gap shows as
+// a gap); longer, and it's a new ride. The old one stays saved either way.
+const LIVE_RESUME_MS = 2 * 3600 * 1000;
+const SAVE_EVERY_STEPS = 6;                               // 30 s
 const HEARTBEAT_MS = 60000;
 
 // per-skill petal: a loop that LEAVES the base, bulges out on its own
@@ -288,6 +294,11 @@ function buildLayers() {
   if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
 }
 
+/** Where the drawn trail begins: the last Start Ride, once the scrubber is past it. */
+function trailStart(i) {
+  return RIDE.trailFrom && i >= RIDE.trailFrom ? RIDE.trailFrom : 0;
+}
+
 function renderAt(i) {
   if (!RIDE || !RIDE.nodes.length) return;
   const alerts = [];
@@ -307,7 +318,7 @@ function renderAt(i) {
       fillColor: heard ? node.color : STALE, color: stroke, weight,
       fillOpacity: heard ? (node.role === "Lead" ? 0.95 : node.role === "Mid" ? 0.8 : 0.6) : 0.35,
     });
-    const upto = node.truePos.slice(0, node.lastHeard[i] + 1).filter(Boolean);
+    const upto = node.truePos.slice(trailStart(i), node.lastHeard[i] + 1).filter(Boolean);
     l.trail.setLatLngs(upto);
     l.trail.setStyle({ opacity: heard ? 0.5 : 0.18 });
     if (node.role !== "Lead") {
@@ -382,7 +393,14 @@ const Live = {
     this.peers.clear();
     this.startedAt = Date.now();
     RIDE = { nodes: [], teams: {}, steps: 1, stepSeconds: LIVE_STEP_SECONDS,
-             base: null, isLive: true };
+             base: null, isLive: true, startedAt: this.startedAt, times: [], trailFrom: 0 };
+  },
+
+  /** Is RIDE a recording we should keep adding to, rather than start over? */
+  canContinue(now) {
+    if (!RIDE || !RIDE.isLive || !RIDE.times || !RIDE.times.length) return false;
+    return now - RIDE.times[RIDE.times.length - 1] < LIVE_RESUME_MS &&
+           RIDE.times.length < LIVE_MAX_STEPS;
   },
 
   /** A beacon landed. Upsert the peer and remember the fix. */
@@ -403,11 +421,12 @@ const Live = {
     peer.role = WP.roleName(beacon.role);
     peer.color = WP_PALETTE[peer.team] || "#9aa4b2";
 
-    // Start Ride: the lead stamped a new epoch. Drop the trail so today's
-    // map doesn't inherit the last ride, exactly as the radios do.
+    // Start Ride: the lead stamped a new epoch. Start the trails fresh so
+    // today's map doesn't inherit the last ride, exactly as the radios do —
+    // but keep the recording; only the drawing starts over.
     if (beacon.rideEpoch !== WP.BEACON.RIDE_EPOCH_NONE && beacon.rideEpoch !== peer.rideEpoch) {
       peer.rideEpoch = beacon.rideEpoch;
-      if (beacon.role === 1) this.clearTrails();
+      if (beacon.role === 1) this.startRide();
     }
     if (beacon.hasPosition) {
       peer.lastPos = [beacon.lat, beacon.lon];
@@ -419,20 +438,32 @@ const Live = {
     }
   },
 
-  clearTrails() {
-    RIDE.nodes.forEach(n => {
-      n.truePos = n.truePos.map(() => null);
-      n.shown = n.shown.map(() => null);
-    });
-    setStatus("Ride started — trails cleared.");
+  startRide() {
+    RIDE.trailFrom = RIDE.times.length;
+    setStatus("Ride started — trails cleared. Everything before it is still in the recording.");
   },
 
   /** Snapshot every peer onto the shared timeline. Runs every LIVE_STEP_SECONDS. */
   sample() {
     if (!RIDE || !RIDE.isLive) return;
     const now = Date.now();
-    const i = RIDE.nodes.length ? RIDE.nodes[0].shown.length : 0;
+    let i = RIDE.times.length;
     if (i >= LIVE_MAX_STEPS) return;
+
+    // Time the page wasn't sampling — screen off, Chrome frozen, Bluetooth
+    // dropped — goes in as empty steps, so the scrubber and the GPX times
+    // stay true to the clock instead of splicing the two sides together.
+    const slot = Math.min(Math.floor((now - RIDE.startedAt) / (LIVE_STEP_SECONDS * 1000)),
+                          LIVE_MAX_STEPS - 1);
+    while (i < slot) {
+      RIDE.times.push(RIDE.startedAt + i * LIVE_STEP_SECONDS * 1000);
+      RIDE.nodes.forEach(n => {
+        n.truePos.push(null); n.shown.push(n.shown[n.shown.length - 1] || null);
+        n.age.push(9999); n.status.push(null); n.lastHeard.push(n.lastHeard[n.lastHeard.length - 1] || 0);
+      });
+      i++;
+    }
+    RIDE.times.push(now);
 
     let structureChanged = false;
     for (const peer of this.peers.values()) {
@@ -481,6 +512,8 @@ const Live = {
     if (structureChanged) { buildLayers(); buildLegend(); }
     scrub.max = Math.max(0, RIDE.steps - 1);
     if (pinnedToNow) { scrub.value = RIDE.steps - 1; renderAt(RIDE.steps - 1); }
+    if (RIDE.times.length % SAVE_EVERY_STEPS === 0) saveRide();
+    updateExport();
   },
 
   /** Drain every queued FromRadio frame. One GATT read = one frame. */
@@ -541,7 +574,10 @@ const Live = {
                       "Bluetooth settings or the Meshtastic app, disconnect it there and try again.");
     }
 
-    this.reset();
+    // A reconnect — or a reload that recovered a recent ride — carries on
+    // recording into the same ride rather than wiping it.
+    const resumed = this.canContinue(Date.now());
+    if (!resumed) this.reset();
 
     // Handshake: ask for the config dump. The radio won't stream packets
     // until a client has identified itself this way.
@@ -562,8 +598,9 @@ const Live = {
 
     followPack = true; pinnedToNow = true;
     setMode("LIVE", "live");
-    setStatus("Connected to " + (this.device.name || "radio") +
-              ". Waiting for beacons — a teammate appears on their first fix.");
+    setStatus("Connected to " + (this.device.name || "radio") + (resumed
+      ? ". Still recording the same ride — the time you were away shows as a gap."
+      : ". Recording — a teammate appears on their first fix."));
     buildLegend();
   },
 
@@ -571,8 +608,9 @@ const Live = {
     clearInterval(this.timer); clearInterval(this.heartbeat);
     this.timer = this.heartbeat = null;
     setMode("DISCONNECTED", "err");
-    setStatus("Radio disconnected. The ride so far is still on the timeline — " +
-              "press Connect to resume.");
+    saveRide();
+    setStatus("Radio disconnected. The ride so far is saved on this phone — " +
+              "press Connect to keep recording.");
     document.getElementById("connect").disabled = false;
   },
 };
@@ -601,10 +639,48 @@ const DataSource = {
 
 document.getElementById("connect").addEventListener("click", () => DataSource.connectLive());
 
+// --- keeping the ride: save to the phone as it records, GPX on demand ---
+const RECORD = window.WolfpackRecord;
+function saveRide() {
+  if (RECORD && RIDE && RIDE.isLive) {
+    RECORD.save(RIDE).catch(e => setStatus("Couldn't save the ride on this phone: " + e.message));
+  }
+}
+function updateExport() {
+  document.getElementById("export").disabled = !(RECORD && RIDE && RIDE.isLive && RECORD.hasFixes(RIDE));
+}
+document.getElementById("export").addEventListener("click", () => {
+  saveRide();
+  RECORD.download(RIDE);
+});
+// Android freezes a hidden tab without warning — save on the way out.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") saveRide();
+});
+
 DataSource.replay(buildMockRide());
 // The mock ride is at Pennypack; if the saved area is elsewhere, show that
 // area's map rather than the demo over a blank background.
 if (region && OFFLINE.regionAt(...BASE) !== region) map.fitBounds(region.bounds);
+
+// A ride saved in the last 12 hours comes back on load — the usual reason
+// is a reload or Android killing the tab mid-ride. Connect carries on
+// recording into it if the gap is short enough (LIVE_RESUME_MS).
+if (RECORD) {
+  RECORD.latest().then(saved => {
+    if (!saved || Date.now() - saved.times[saved.times.length - 1] > 12 * 3600 * 1000) return;
+    if (RIDE && RIDE.isLive) return;            // already connected; don't clobber
+    stop();
+    pinnedToNow = true;
+    DataSource.replay(saved);
+    scrub.value = RIDE.steps - 1; renderAt(RIDE.steps - 1);
+    if (RIDE.base) followRegion(RIDE.base[0], RIDE.base[1]);
+    setMode("SAVED RIDE", "");
+    setStatus(`Recovered ${RECORD.rideName(saved)} from this phone. ` +
+              "Connect radio to keep recording it, or ⬇ GPX to export.");
+    updateExport();
+  }).catch(() => {});
+}
 
 // Offline basemap: service worker + "Save map offline". Absent in the node
 // tests (they stub the DOM and never load wolfpack-offline.js).

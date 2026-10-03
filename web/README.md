@@ -31,6 +31,27 @@ lot.
 | A radio **on the pack's channel and PSK** | Packets from another channel arrive encrypted. The page detects that case and says so rather than showing an empty map for no visible reason. |
 | Radios running **slice 9** firmware | v4 beacons carry the ride epoch. v3 and v2 beacons still plot; they just never trigger a Start Ride trail clear. |
 
+## Keeping the ride
+
+Live mode records from the moment a radio connects, every 5 s, up to 8 hours.
+Nothing to set up first. The recording is **saved on the phone** (IndexedDB)
+every 30 s and whenever the page goes to the background, because Android
+freezes a hidden Chrome tab without warning.
+
+- **Reload or a killed tab:** the ride from the last 12 hours comes back on the
+  next load, marked SAVED RIDE.
+- **Bluetooth drops** (screen off, out of range of the phone): press Connect and
+  it carries on recording the same ride. The time you were away shows as a gap
+  on the scrubber, not a splice. After 2 hours away, it's a new ride.
+- **Start Ride** restarts the drawn trails, as on the radios, but the recording
+  keeps everything before it.
+- **⬇ GPX** exports the ride: one track per radio, a new segment wherever a
+  radio went quiet, fresh fixes only. Opens in Gaia, CalTopo, OsmAnd and
+  friends; Strava takes one track per activity, so it imports the first.
+
+Rides stay on the phone for 7 days. Nothing is uploaded anywhere. Sharing is
+the [ride relay](../docs/RIDE-RELAY.md)'s job, and that isn't built yet.
+
 ## Why it reads our beacon, not standard position packets
 
 Meshtastic truncates native position packets to the channel's

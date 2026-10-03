@@ -17,12 +17,13 @@
 importScripts("wolfpack-offline.js");
 const OFF = self.WolfpackOffline;
 
-const SHELL_CACHE = "wolfpack-shell-v3";
+const SHELL_CACHE = "wolfpack-shell-v4";
 const SHELL = [
   "./",
   "index.html",
   "wolfpack-protocol.js",
   "wolfpack-offline.js",
+  "wolfpack-record.js",
   "vendor/leaflet/leaflet.js",
   "vendor/leaflet/leaflet.css",
   "vendor/leaflet/images/layers.png",

@@ -61,7 +61,8 @@ const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const source = blocks[blocks.length - 1] +
   "\n;globalThis.__Live = Live; globalThis.__ride = () => RIDE;" +
-  "\n;globalThis.__setRide = r => { RIDE = r; };";
+  "\n;globalThis.__setRide = r => { RIDE = r; };" +
+  "\n;globalThis.__trailStart = trailStart;";
 
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox, { filename: "index.html:inline" });
@@ -152,17 +153,23 @@ test("a position-less heartbeat never plots (0,0)", () => {
   eq(ride().base, null, "base not seeded by a position-less beacon");
 });
 
-test("Start Ride clears the trails", () => {
+test("Start Ride restarts the drawn trail but keeps the recording", () => {
   Live.reset();
   const now = Date.now();
   Live.onBeacon(111, beacon({ color: 1, role: 1, rideEpoch: 5 }), now);
   Live.sample(); Live.sample();
-  ok(ride().nodes[0].truePos.some(Boolean), "trail has crumbs");
+  const crumbs = ride().nodes[0].truePos.filter(Boolean).length;
+  ok(crumbs > 0, "trail has crumbs");
 
   // Lead stamps a new epoch — the same signal the radios act on.
   Live.onBeacon(111, beacon({ color: 1, role: 1, rideEpoch: 99 }), Date.now());
-  ok(!ride().nodes[0].truePos.some(Boolean), "trail cleared");
   eq(Live.peers.get(111).rideEpoch, 99, "epoch recorded");
+  eq(ride().nodes[0].truePos.filter(Boolean).length, crumbs, "the recording is untouched");
+  const from = ride().trailFrom;
+  eq(from, ride().times.length, "trail restarts at the current step");
+  Live.sample();
+  eq(sandbox.__trailStart(from), from, "after the start, the trail draws from it");
+  eq(sandbox.__trailStart(0), 0, "scrubbed back before it, the whole history draws");
 });
 
 test("repeating the same epoch does not re-clear", () => {
@@ -220,6 +227,33 @@ test("a long ride stays rectangular through churn", () => {
     ok(rectangular(ride()), `rectangular at step ${i}`);
   }
   eq(ride().nodes.length, 3, "three riders");
+});
+
+test("time the page wasn't sampling becomes empty steps, not a splice", () => {
+  // Screen off, Chrome frozen: the timer stops, then fires a minute later.
+  Live.reset();
+  Live.onBeacon(1, beacon({ color: 1, role: 1 }), Date.now());
+  Live.sample();
+  ride().startedAt -= 60 * 1000;           // pretend the ride began a minute ago
+  ride().times[0] -= 60 * 1000;
+  Live.onBeacon(1, beacon({ color: 1, role: 1, lat: 39.96 }), Date.now());
+  Live.sample();
+  const r = ride();
+  eq(r.times.length, 13, "slot 12 of a 5 s timeline, plus the padding before it");
+  ok(rectangular(r), "padding keeps the arrays rectangular");
+  eq(r.nodes[0].truePos.length, r.times.length, "every step has a time");
+  eq(r.nodes[0].truePos.slice(1, 12).filter(Boolean).length, 0, "the gap has no fixes");
+  ok(r.nodes[0].truePos[12] !== null, "the fix after the gap lands at its real time");
+  ok(r.times.every((t, k) => k === 0 || t >= r.times[k - 1]), "times never go backwards");
+});
+
+test("a reconnect carries on the same ride; a long gap starts a new one", () => {
+  Live.reset();
+  ok(!Live.canContinue(Date.now()), "nothing recorded yet — nothing to continue");
+  Live.onBeacon(1, beacon({ color: 1, role: 1 }), Date.now());
+  Live.sample();
+  ok(Live.canContinue(Date.now()), "a minute later, keep recording into it");
+  ok(!Live.canContinue(Date.now() + 3 * 3600 * 1000), "three hours later, it's a new ride");
 });
 
 console.log(`\n${checks} checks, ${failures} failures`);
